@@ -3,9 +3,13 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
-[![Stars](https://img.shields.io/github/stars/SebastianGilPinzon/colab-mcp?style=social)](https://github.com/SebastianGilPinzon/colab-mcp)
+[![Stars](https://img.shields.io/github/stars/aliieroglu/hermes-colab-agent?style=social)](https://github.com/aliieroglu/hermes-colab-agent)
 
 An MCP server for controlling Google Colab from any AI coding agent. This fork fixes the bugs in the [official repo](https://github.com/googlecolab/colab-mcp) that block real day-to-day use and restores features Google removed upstream.
+
+## Project Lineage and Hermes Roadmap
+
+This public fork builds on [Google's original `colab-mcp`](https://github.com/googlecolab/colab-mcp) and [SebastianGilPinzon's enhanced fork](https://github.com/SebastianGilPinzon/colab-mcp), preserving their Apache-2.0 license and Git history. The current Hermes-specific patch makes browser opening deterministic on Linux systems with both a signed-in Chrome session and a headless fallback. The planned Playwright/CDP browser manager, runtime/job/file tools, and reconnection architecture are documented in [`COLAB_AGENT_ARCHITECTURE.md`](COLAB_AGENT_ARCHITECTURE.md).
 
 ## Why This Fork?
 
@@ -65,7 +69,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 ### 2. Clone this repo
 
 ```bash
-git clone https://github.com/SebastianGilPinzon/colab-mcp.git
+git clone https://github.com/aliieroglu/hermes-colab-agent.git
 ```
 
 ### 3. Configure your MCP client
@@ -168,7 +172,7 @@ Agent: get_cells()
 
 ## CLI Reference
 
-Once installed (via `uv run` or `uvx git+https://github.com/SebastianGilPinzon/colab-mcp`), the `colab-mcp` command supports these flags:
+Once installed (via `uv run` or `uvx git+https://github.com/aliieroglu/hermes-colab-agent`), the `colab-mcp` command supports these flags:
 
 | Flag | Description |
 |------|-------------|

@@ -19,6 +19,7 @@ import logging
 import os
 import tempfile
 import sys
+import subprocess
 import webbrowser
 
 from fastmcp import FastMCP
@@ -63,9 +64,22 @@ async def open_colab_browser_connection() -> str:
     # `?p=<port>` forces a unique URL per server instance so Chrome can't
     # silently reuse a stale tab from a prior session (whose fragment points
     # at a dead port). The fragment remains the source of truth for Colab.
-    webbrowser.open_new(
-        f"{COLAB}{SCRATCH_PATH}?p={_proxy_client.wss.port}#mcpProxyToken={_proxy_client.wss.token}&mcpProxyPort={_proxy_client.wss.port}"
+    connect_url = (
+        f"{COLAB}{SCRATCH_PATH}?p={_proxy_client.wss.port}"
+        f"#mcpProxyToken={_proxy_client.wss.token}&mcpProxyPort={_proxy_client.wss.port}"
     )
+    # webbrowser.open_new() may target the headless fallback profile when two
+    # Chrome installations are present. Explicitly invoke stable Chrome; its
+    # singleton forwards the URL to the already-running signed-in profile.
+    try:
+        subprocess.Popen(
+            ["/usr/bin/google-chrome-stable", connect_url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        webbrowser.open_new(connect_url)
 
     # Wait for browser to connect
     await _proxy_client.await_proxy_connection()
