@@ -20,14 +20,11 @@ import logging
 from fastmcp import FastMCP, Client
 from fastmcp.client.transports import ClientTransport
 from fastmcp.server.middleware import Middleware, MiddlewareContext
-from fastmcp.server.middleware.tool_injection import ToolInjectionMiddleware
-from fastmcp.server.proxy import FastMCPProxy
 from fastmcp.tools.tool import Tool, ToolResult
 from mcp.client.session import ClientSession
 from mcp.types import TextContent
-import webbrowser
 
-from colab_mcp.websocket_server import ColabWebSocketServer, COLAB, SCRATCH_PATH
+from colab_mcp.websocket_server import ColabWebSocketServer
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +171,19 @@ class ColabProxyMiddleware(Middleware):
                 message="Connected! Waiting for notebook tools to become available...",
             )
             tool_names = await self.proxy_client.await_tools_ready()
+            if not tool_names:
+                return ToolResult(
+                    content=[
+                        TextContent(
+                            type="text",
+                            text="Connection established, but notebook tools are not ready.",
+                        )
+                    ],
+                    structured_content={
+                        "result": False,
+                        "available_tools": [],
+                    },
+                )
             tools_text = ", ".join(tool_names) if tool_names else "none discovered"
             await context.fastmcp_context.report_progress(
                 progress=4,
@@ -220,14 +230,6 @@ def _make_injected_tools(
     async def check_session_proxy_tool_fn() -> bool:
         if proxy_client.is_connected():
             return True
-        # Query param `?p=<port>` forces a unique URL per server instance so
-        # Chrome opens a fresh tab instead of silently reusing a stale tab
-        # left over from a prior session (whose fragment points at a dead
-        # port). The fragment is still the source of truth for Colab's
-        # browser-side code.
-        webbrowser.open_new(
-            f"{COLAB}{SCRATCH_PATH}?p={proxy_client.wss.port}#mcpProxyToken={proxy_client.wss.token}&mcpProxyPort={proxy_client.wss.port}"
-        )
         return False
 
     async def add_code_cell_stub(code: str = "", cellIndex: int = 0, language: str = "python") -> str:

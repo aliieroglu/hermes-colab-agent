@@ -16,7 +16,6 @@ succeeded or timed out, and exits.
 import asyncio
 import sys
 
-from colab_mcp.session import ColabProxyClient
 from colab_mcp.websocket_server import ColabWebSocketServer, COLAB, SCRATCH_PATH
 
 

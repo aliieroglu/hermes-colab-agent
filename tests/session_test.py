@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import asyncio
+from types import SimpleNamespace
 from colab_mcp import session
 from fastmcp import Client
 from fastmcp.server.middleware import MiddlewareContext
@@ -77,6 +78,9 @@ class TestDirectTools:
                 "delete_cell",
                 "move_cell",
                 "change_runtime",
+                "get_colab_browser_status",
+                "list_colab_tabs",
+                "open_colab_notebook",
             }
 
     @pytest.mark.asyncio
@@ -87,6 +91,208 @@ class TestDirectTools:
             assert any(
                 session.NOT_CONNECTED_MSG in c.text for c in result.content
             )
+
+    @pytest.mark.asyncio
+    async def test_connection_tool_opens_requested_notebook_with_playwright(
+        self, monkeypatch
+    ):
+        import colab_mcp
+        from colab_mcp.browser_manager import ColabTab
+
+        browser_calls = []
+        semantic_probes = []
+
+        class FakeBrowserManager:
+            async def open_notebook(self, target, **kwargs):
+                browser_calls.append((target, kwargs))
+                return ColabTab(
+                    title="Notebook",
+                    url="https://colab.research.google.com/drive/abcDEF_12345?p=18585",
+                    selected=True,
+                )
+
+            async def clear_connection_fragment(self, target):
+                return None
+
+        class FakeProxyClient:
+            def __init__(self):
+                self.connected = False
+                self.wss = SimpleNamespace(port=18585, token="do-not-log")
+                self.proxy_mcp_client = SimpleNamespace(
+                    call_tool=self.call_tool
+                )
+
+            async def call_tool(self, name, arguments):
+                semantic_probes.append((name, arguments))
+                return SimpleNamespace(content=[])
+
+            def is_connected(self):
+                return self.connected
+
+            async def await_proxy_connection(self):
+                self.connected = True
+
+            async def await_tools_ready(self):
+                return ["get_cells"]
+
+        monkeypatch.setattr(colab_mcp, "_browser_manager", FakeBrowserManager())
+        monkeypatch.setattr(colab_mcp, "_proxy_client", FakeProxyClient())
+
+        async with Client(colab_mcp.mcp) as client:
+            result = await client.call_tool(
+                "open_colab_browser_connection",
+                {"notebook_url_or_drive_id": "abcDEF_12345"},
+            )
+
+        assert not result.is_error
+        assert browser_calls == [
+            (
+                "abcDEF_12345",
+                {
+                    "connection_port": 18585,
+                    "connection_token": "do-not-log",
+                },
+            )
+        ]
+        assert semantic_probes == [("get_cells", {})]
+        assert "Connection successful" in result.content[0].text
+
+    @pytest.mark.asyncio
+    async def test_connection_tool_refuses_without_playwright_without_exposing_token(
+        self, monkeypatch, mock_webbrowser
+    ):
+        import colab_mcp
+
+        class FakeProxyClient:
+            wss = SimpleNamespace(port=18585, token="do-not-leak")
+
+            def is_connected(self):
+                return False
+
+        monkeypatch.setattr(colab_mcp, "_browser_manager", None)
+        monkeypatch.setattr(colab_mcp, "_proxy_client", FakeProxyClient())
+
+        async with Client(colab_mcp.mcp) as client:
+            result = await client.call_tool("open_colab_browser_connection", {})
+
+        assert not result.is_error
+        assert "disabled" in result.content[0].text.lower()
+        assert "do-not-leak" not in result.content[0].text
+        mock_webbrowser.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_connection_fragment_is_cleared_after_connection_attempt(self, monkeypatch):
+        import colab_mcp
+
+        events = []
+
+        class FakeBrowserManager:
+            async def open_notebook(self, target, **kwargs):
+                events.append("open")
+
+            async def clear_connection_fragment(self, target):
+                events.append(("clear", target))
+
+        class FakeProxyClient:
+            connected = False
+            wss = SimpleNamespace(port=18585, token="do-not-leak")
+
+            def is_connected(self):
+                return self.connected
+
+            async def await_proxy_connection(self):
+                events.append("await")
+
+        monkeypatch.setattr(colab_mcp, "_browser_manager", FakeBrowserManager())
+        monkeypatch.setattr(colab_mcp, "_proxy_client", FakeProxyClient())
+        monkeypatch.setattr(colab_mcp.process_registry, "list_running", lambda: [])
+
+        async with Client(colab_mcp.mcp) as client:
+            result = await client.call_tool(
+                "open_colab_browser_connection",
+                {"notebook_url_or_drive_id": "abcDEF_12345"},
+            )
+
+        assert not result.is_error
+        assert events == ["open", "await", ("clear", "abcDEF_12345")]
+
+    @pytest.mark.asyncio
+    async def test_fragment_cleanup_warning_does_not_log_token(
+        self, monkeypatch, caplog
+    ):
+        import colab_mcp
+
+        class FakeBrowserManager:
+            async def open_notebook(self, target, **kwargs):
+                return None
+
+            async def clear_connection_fragment(self, target):
+                raise RuntimeError(
+                    "failed at #mcpProxyToken=do-not-leak&mcpProxyPort=18585"
+                )
+
+        class FakeProxyClient:
+            connected = False
+            wss = SimpleNamespace(port=18585, token="do-not-leak")
+
+            def is_connected(self):
+                return self.connected
+
+            async def await_proxy_connection(self):
+                return None
+
+        monkeypatch.setattr(colab_mcp, "_browser_manager", FakeBrowserManager())
+        monkeypatch.setattr(colab_mcp, "_proxy_client", FakeProxyClient())
+        monkeypatch.setattr(colab_mcp.process_registry, "list_running", lambda: [])
+        caplog.set_level("WARNING")
+
+        async with Client(colab_mcp.mcp) as client:
+            result = await client.call_tool(
+                "open_colab_browser_connection",
+                {"notebook_url_or_drive_id": "abcDEF_12345"},
+            )
+
+        assert not result.is_error
+        assert "do-not-leak" not in caplog.text
+        assert "mcpProxyToken" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_fragment_cleanup_failure_prevents_success(self, monkeypatch):
+        import colab_mcp
+
+        class FakeBrowserManager:
+            async def open_notebook(self, target, **kwargs):
+                return None
+
+            async def clear_connection_fragment(self, target):
+                raise RuntimeError("cleanup failed")
+
+        class FakeProxyClient:
+            connected = False
+            wss = SimpleNamespace(port=18585, token="do-not-leak")
+            proxy_mcp_client = AsyncMock()
+
+            def is_connected(self):
+                return self.connected
+
+            async def await_proxy_connection(self):
+                self.connected = True
+
+            async def await_tools_ready(self):
+                return ["get_cells"]
+
+        monkeypatch.setattr(colab_mcp, "_browser_manager", FakeBrowserManager())
+        monkeypatch.setattr(colab_mcp, "_proxy_client", FakeProxyClient())
+
+        async with Client(colab_mcp.mcp) as client:
+            result = await client.call_tool(
+                "open_colab_browser_connection",
+                {"notebook_url_or_drive_id": "abcDEF_12345"},
+            )
+
+        assert not result.is_error
+        assert "Connection successful" not in result.content[0].text
+        assert "securely clear" in result.content[0].text
 
 
 class TestAwaitToolsReady:
@@ -210,8 +416,9 @@ class TestColabProxyMiddleware:
 
         result = await middleware.on_call_tool(context, call_next)
 
-        assert result.structured_content["result"] is True
+        assert result.structured_content["result"] is False
         assert result.structured_content["available_tools"] == []
+        assert "not ready" in result.content[0].text.lower()
 
     @pytest.mark.asyncio
     async def test_on_call_tool_timeout(self, mock_proxy_client):
@@ -241,19 +448,15 @@ class TestInjectedTools:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_disconnected(self, mock_wss, mock_webbrowser):
+    async def test_disconnected_does_not_expose_token_to_system_browser(
+        self, mock_wss, mock_webbrowser
+    ):
         proxy_client = session.ColabProxyClient(mock_wss)
         tools = session._make_injected_tools(proxy_client)
         connection_tool = [t for t in tools if t.name == session.INJECTED_TOOL_NAME][0]
         result = await connection_tool.fn()
         assert result is False
-        mock_webbrowser.assert_called_once()
-        args, _ = mock_webbrowser.call_args
-        assert "mcpProxyToken=test-token" in args[0]
-        assert "mcpProxyPort=1234" in args[0]
-        # ?p=<port> in the query forces a unique URL per server instance so
-        # Chrome opens a fresh tab instead of dedup'ing onto a stale one.
-        assert "?p=1234" in args[0]
+        mock_webbrowser.assert_not_called()
 
     def test_has_all_expected_tools(self, mock_wss):
         proxy_client = session.ColabProxyClient(mock_wss)

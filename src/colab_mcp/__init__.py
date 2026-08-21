@@ -14,19 +14,22 @@
 
 import argparse
 import asyncio
+from dataclasses import asdict
 import datetime
+import json
 import logging
 import os
+from pathlib import Path
 import tempfile
 import sys
-import subprocess
-import webbrowser
+
 
 from fastmcp import FastMCP
 from fastmcp.utilities import logging as fastmcp_logger
 
 from colab_mcp.session import ColabSessionProxy, NOT_CONNECTED_MSG
 from colab_mcp.websocket_server import COLAB, SCRATCH_PATH
+from colab_mcp.browser_manager import BrowserConfig, ColabBrowserManager
 from colab_mcp import process_registry
 
 
@@ -36,6 +39,7 @@ mcp = FastMCP(name="ColabMCP")
 _proxy_client = None
 _session_mcp = None
 _colab_client = None  # For runtime API (assign/unassign GPU)
+_browser_manager: ColabBrowserManager | None = None
 
 
 async def _forward_or_stub(tool_name: str, arguments: dict) -> str:
@@ -53,39 +57,97 @@ async def _forward_or_stub(tool_name: str, arguments: dict) -> str:
 
 
 @mcp.tool()
-async def open_colab_browser_connection() -> str:
-    """Opens a connection to a Google Colab browser session and unlocks notebook editing tools. Returns whether the connection attempt succeeded."""
+async def get_colab_browser_status() -> str:
+    """Return a redacted status summary for the managed Playwright browser."""
+    if _browser_manager is None:
+        return json.dumps({"enabled": False, "running": False})
+    return json.dumps({"enabled": True, **asdict(_browser_manager.status())})
+
+
+@mcp.tool()
+async def list_colab_tabs() -> str:
+    """List open Colab tabs without exposing MCP connection tokens."""
+    if _browser_manager is None:
+        return json.dumps([])
+    tabs = await _browser_manager.list_colab_tabs()
+    return json.dumps([asdict(tab) for tab in tabs])
+
+
+@mcp.tool()
+async def open_colab_notebook(notebook_url_or_drive_id: str) -> str:
+    """Open or reuse a trusted Colab notebook in the managed browser."""
+    if _browser_manager is None:
+        return "Playwright browser management is disabled."
+    tab = await _browser_manager.open_notebook(notebook_url_or_drive_id)
+    return json.dumps(asdict(tab))
+
+
+@mcp.tool()
+async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> str:
+    """Open a Colab notebook and attach its browser-side MCP proxy.
+
+    When omitted, ``notebook_url_or_drive_id`` opens Colab's scratchpad. A
+    Drive ID or trusted Colab URL selects an existing notebook tab when
+    possible. The connection token is passed only to the browser manager and
+    is never returned by this tool.
+    """
     if _proxy_client is not None and _proxy_client.is_connected():
         return "Already connected to Colab."
 
     if _proxy_client is None:
         return "Server not initialized. Please wait and try again."
 
-    # `?p=<port>` forces a unique URL per server instance so Chrome can't
-    # silently reuse a stale tab from a prior session (whose fragment points
-    # at a dead port). The fragment remains the source of truth for Colab.
-    connect_url = (
-        f"{COLAB}{SCRATCH_PATH}?p={_proxy_client.wss.port}"
-        f"#mcpProxyToken={_proxy_client.wss.token}&mcpProxyPort={_proxy_client.wss.port}"
-    )
-    # webbrowser.open_new() may target the headless fallback profile when two
-    # Chrome installations are present. Explicitly invoke stable Chrome; its
-    # singleton forwards the URL to the already-running signed-in profile.
-    try:
-        subprocess.Popen(
-            ["/usr/bin/google-chrome-stable", connect_url],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
+    target = notebook_url_or_drive_id or f"{COLAB}{SCRATCH_PATH}"
+    if _browser_manager is None:
+        return (
+            "Playwright browser management is disabled; refusing to place the "
+            "MCP connection token in a system-browser command-line URL."
         )
-    except OSError:
-        webbrowser.open_new(connect_url)
+    await _browser_manager.open_notebook(
+        target,
+        connection_port=_proxy_client.wss.port,
+        connection_token=_proxy_client.wss.token,
+    )
 
-    # Wait for browser to connect
-    await _proxy_client.await_proxy_connection()
+    # Wait for Colab to consume the fragment before removing it from the
+    # current browser history entry. Also attempt removal after a timeout or
+    # connection error so the token does not remain in session history.
+    fragment_cleared = True
+    try:
+        await _proxy_client.await_proxy_connection()
+    finally:
+        try:
+            await _browser_manager.clear_connection_fragment(target)
+        except Exception:
+            fragment_cleared = False
+            logging.warning("Could not clear browser connection fragment")
+
+    if not fragment_cleared:
+        return (
+            "Connection attempt stopped because the MCP token fragment could not be "
+            "securely cleared from browser history. Close the Colab tab and retry."
+        )
 
     if _proxy_client.is_connected():
         tool_names = await _proxy_client.await_tools_ready()
+        if "get_cells" not in tool_names:
+            return (
+                "Connection established, but semantic verification failed: "
+                "the browser did not expose get_cells. Retry the connection."
+            )
+        proxy_mcp_client = _proxy_client.proxy_mcp_client
+        if proxy_mcp_client is None:
+            return (
+                "Connection established, but semantic verification failed: "
+                "the browser MCP client is not ready. Retry the connection."
+            )
+        try:
+            await proxy_mcp_client.call_tool("get_cells", {})
+        except Exception:
+            return (
+                "Connection established, but the get_cells semantic probe failed. "
+                "Retry the connection."
+            )
         tools_text = ", ".join(tool_names) if tool_names else "none discovered"
         return f"Connection successful. Available notebook tools: {tools_text}. You can now create, edit, and execute cells in the Colab notebook."
 
@@ -234,6 +296,34 @@ def parse_args(v):
         default=None,
     )
     parser.add_argument(
+        "--no-playwright-browser",
+        dest="playwright_browser",
+        help="Disable Playwright browser lifecycle management; secure MCP browser connection opening will be unavailable.",
+        action="store_false",
+        default=True,
+    )
+    parser.add_argument(
+        "--browser-profile-dir",
+        help="Dedicated persistent Chrome profile used only by Hermes Colab Agent.",
+        default=str(Path.home() / ".local/share/hermes-colab-agent/chrome-profile"),
+    )
+    parser.add_argument(
+        "--browser-channel",
+        help="Playwright browser channel. Defaults to installed stable Chrome.",
+        default="chrome",
+    )
+    parser.add_argument(
+        "--browser-executable",
+        help="Optional explicit Chrome/Chromium executable path; overrides --browser-channel.",
+        default=None,
+    )
+    parser.add_argument(
+        "--browser-headless",
+        help="Run the managed browser headlessly after initial login has been completed.",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
         "--list-running",
         help="List all currently-running colab-mcp servers and exit.",
         action="store_true",
@@ -246,6 +336,25 @@ def parse_args(v):
         default=False,
     )
     return parser.parse_args(v)
+
+
+def create_browser_manager(args) -> ColabBrowserManager | None:
+    """Create the lazily-started Playwright manager from CLI arguments."""
+    if not args.playwright_browser:
+        return None
+    executable_path = (
+        Path(args.browser_executable).expanduser()
+        if args.browser_executable
+        else None
+    )
+    return ColabBrowserManager(
+        BrowserConfig(
+            profile_dir=Path(args.browser_profile_dir).expanduser(),
+            executable_path=executable_path,
+            headless=args.browser_headless,
+            channel=args.browser_channel or None,
+        )
+    )
 
 
 def _print_running_servers() -> None:
@@ -261,7 +370,7 @@ def _print_running_servers() -> None:
 
 
 async def main_async():
-    global _proxy_client, _session_mcp, _colab_client
+    global _proxy_client, _session_mcp, _colab_client, _browser_manager
     args = parse_args(sys.argv[1:])
     init_logger(args.log)
 
@@ -287,6 +396,8 @@ async def main_async():
     dead = process_registry.prune_dead()
     if dead:
         logging.info(f"Pruned {dead} stale entries from process registry")
+
+    _browser_manager = create_browser_manager(args)
 
     if args.enable_proxy:
         logging.info("enabling session proxy tools")
@@ -320,13 +431,20 @@ async def main_async():
         await mcp.run_async()
 
     finally:
-        if args.enable_proxy and _session_mcp:
-            await _session_mcp.cleanup()
-        # Always unregister so a clean shutdown doesn't leave a stale entry.
         try:
-            process_registry.unregister()
-        except Exception as exc:
-            logging.warning(f"Could not unregister process: {exc}")
+            if args.enable_proxy and _session_mcp:
+                await _session_mcp.cleanup()
+        finally:
+            try:
+                if _browser_manager is not None:
+                    browser_manager, _browser_manager = _browser_manager, None
+                    await browser_manager.close()
+            finally:
+                # Always unregister so a clean shutdown doesn't leave a stale entry.
+                try:
+                    process_registry.unregister()
+                except Exception as exc:
+                    logging.warning(f"Could not unregister process: {exc}")
 
 
 def main() -> None:

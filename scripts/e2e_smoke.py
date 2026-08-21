@@ -9,7 +9,7 @@ Usage:
 
 The disconnected smoke verifies:
   - Server starts cleanly
-  - All 9 tools are visible at startup (1 connection + 7 notebook + 1 GPU)
+  - All 12 tools are visible at startup (1 connection + 3 browser + 7 notebook + 1 GPU)
   - Each notebook tool returns NOT_CONNECTED_MSG when called without a browser
   - The old `execute_cell` no longer exists (rename regression check)
 
@@ -32,6 +32,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 EXPECTED_TOOLS = {
     "open_colab_browser_connection",
+    "get_colab_browser_status",
+    "list_colab_tabs",
+    "open_colab_notebook",
     "add_code_cell",
     "add_text_cell",
     "get_cells",
@@ -76,7 +79,7 @@ async def smoke_disconnected(client: Client) -> int:
     if extra:
         print(_yellow(f"  EXTRA (unexpected but not fatal): {sorted(extra)}"))
     if not missing:
-        print(_green(f"  OK — all 9 expected tools present"))
+        print(_green("  OK — all 12 expected tools present"))
 
     print("\n[2/4] Checking execute_cell was removed (rename regression)...")
     if "execute_cell" in tool_names:
@@ -85,8 +88,16 @@ async def smoke_disconnected(client: Client) -> int:
     else:
         print(_green("  OK — execute_cell correctly removed"))
 
-    print("\n[3/4] Inspecting schemas of the 4 newly-added/renamed tools...")
-    target_tools = {"get_cells", "run_code_cell", "delete_cell", "move_cell"}
+    print("\n[3/4] Inspecting schemas of browser/renamed tools...")
+    target_tools = {
+        "get_colab_browser_status",
+        "list_colab_tabs",
+        "open_colab_notebook",
+        "get_cells",
+        "run_code_cell",
+        "delete_cell",
+        "move_cell",
+    }
     for tool in tools:
         if tool.name not in target_tools:
             continue
@@ -127,7 +138,7 @@ async def smoke_connected(client: Client) -> int:
     result = await client.call_tool("open_colab_browser_connection", {})
     text = "\n".join(c.text for c in result.content if hasattr(c, "text"))
     if "Connection successful" in text:
-        print(_green(f"  OK — connection established"))
+        print(_green("  OK — connection established"))
         print(f"    Server reply: {text[:200]}")
     else:
         print(_red(f"  FAIL — connection not established. Reply: {text}"))
@@ -232,7 +243,7 @@ async def main():
 
     print(_bold("\n=== Summary ==="))
     if failures == 0:
-        print(_green(f"All checks passed."))
+        print(_green("All checks passed."))
         sys.exit(0)
     else:
         print(_red(f"{failures} check(s) failed."))
