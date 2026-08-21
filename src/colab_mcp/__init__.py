@@ -324,6 +324,15 @@ def parse_args(v):
         default=False,
     )
     parser.add_argument(
+        "--browser-cdp-endpoint",
+        help=(
+            "Attach to an existing loopback-only Chrome DevTools endpoint "
+            "instead of launching another browser (for example, "
+            "http://127.0.0.1:9222)."
+        ),
+        default=None,
+    )
+    parser.add_argument(
         "--list-running",
         help="List all currently-running colab-mcp servers and exit.",
         action="store_true",
@@ -353,6 +362,7 @@ def create_browser_manager(args) -> ColabBrowserManager | None:
             executable_path=executable_path,
             headless=args.browser_headless,
             channel=args.browser_channel or None,
+            cdp_endpoint=args.browser_cdp_endpoint,
         )
     )
 

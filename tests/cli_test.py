@@ -22,6 +22,7 @@ def test_browser_cli_defaults_to_dedicated_visible_chrome_profile(
     assert args.browser_channel == "chrome"
     assert args.browser_executable is None
     assert args.browser_headless is False
+    assert args.browser_cdp_endpoint is None
 
 
 def test_create_browser_manager_maps_cli_configuration(tmp_path):
@@ -38,6 +39,8 @@ def test_create_browser_manager_maps_cli_configuration(tmp_path):
             "--browser-executable",
             "/opt/custom-chrome",
             "--browser-headless",
+            "--browser-cdp-endpoint",
+            "http://127.0.0.1:9222",
         ]
     )
 
@@ -47,6 +50,7 @@ def test_create_browser_manager_maps_cli_configuration(tmp_path):
     assert manager.config.executable_path == Path("/opt/custom-chrome")
     assert manager.config.channel == "chromium"
     assert manager.config.headless is True
+    assert manager.config.cdp_endpoint == "http://127.0.0.1:9222"
 
 
 @pytest.mark.asyncio

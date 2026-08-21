@@ -106,6 +106,26 @@ def test_build_mcp_connection_url_rejects_empty_token():
         )
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "http://192.168.1.10:9222",
+        "https://example.com:9222",
+        "http://user:password@127.0.0.1:9222",
+    ],
+)
+def test_browser_config_rejects_non_loopback_or_credentialed_cdp_endpoint(
+    tmp_path, endpoint
+):
+    browser_manager = importlib.import_module("colab_mcp.browser_manager")
+
+    with pytest.raises(ValueError, match="loopback"):
+        browser_manager.BrowserConfig(
+            profile_dir=tmp_path,
+            cdp_endpoint=endpoint,
+        )
+
+
 @pytest.mark.asyncio
 async def test_manager_launches_persistent_context_with_dedicated_profile(tmp_path):
     browser_manager = importlib.import_module("colab_mcp.browser_manager")
@@ -155,6 +175,123 @@ async def test_manager_launches_persistent_context_with_dedicated_profile(tmp_pa
         },
     )
     assert calls[-2:] == [("context.close",), ("playwright.stop",)]
+
+
+@pytest.mark.asyncio
+async def test_manager_attaches_to_existing_cdp_browser_context(tmp_path):
+    browser_manager = importlib.import_module("colab_mcp.browser_manager")
+    calls = []
+
+    class FakeContext:
+        pages = []
+
+    context = FakeContext()
+
+    class FakeBrowser:
+        contexts = [context]
+
+    class FakeChromium:
+        async def connect_over_cdp(self, endpoint):
+            calls.append(("connect_over_cdp", endpoint))
+            return FakeBrowser()
+
+        async def launch_persistent_context(self, *_args, **_kwargs):
+            raise AssertionError("CDP mode must not launch another browser")
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    async def starter():
+        return FakePlaywright()
+
+    manager = browser_manager.ColabBrowserManager(
+        browser_manager.BrowserConfig(
+            profile_dir=tmp_path,
+            cdp_endpoint="http://127.0.0.1:9222",
+        ),
+        playwright_starter=starter,
+    )
+
+    result = await manager.ensure_started()
+
+    assert result is context
+    assert calls == [("connect_over_cdp", "http://127.0.0.1:9222")]
+
+
+@pytest.mark.asyncio
+async def test_external_cdp_disconnect_clears_attached_browser_state(tmp_path):
+    browser_manager = importlib.import_module("colab_mcp.browser_manager")
+
+    class FakeContext:
+        pages = []
+
+        def on(self, event, callback):
+            assert event == "close"
+
+    class FakeBrowser:
+        contexts = [FakeContext()]
+
+        def on(self, event, callback):
+            assert event == "disconnected"
+            self.disconnect_callback = callback
+
+    browser = FakeBrowser()
+
+    class FakeChromium:
+        async def connect_over_cdp(self, endpoint):
+            return browser
+
+    class FakePlaywright:
+        chromium = FakeChromium()
+
+    async def starter():
+        return FakePlaywright()
+
+    manager = browser_manager.ColabBrowserManager(
+        browser_manager.BrowserConfig(
+            profile_dir=tmp_path,
+            cdp_endpoint="http://127.0.0.1:9222",
+        ),
+        playwright_starter=starter,
+    )
+    await manager.ensure_started()
+
+    browser.disconnect_callback()
+
+    assert manager.status().running is False
+    assert manager._browser is None
+
+
+@pytest.mark.asyncio
+async def test_close_disconnects_driver_without_closing_external_cdp_context(tmp_path):
+    browser_manager = importlib.import_module("colab_mcp.browser_manager")
+    events = []
+
+    class FakeContext:
+        async def close(self):
+            events.append("context.close")
+
+    class FakePlaywright:
+        async def stop(self):
+            events.append("playwright.stop")
+
+    manager = browser_manager.ColabBrowserManager(
+        browser_manager.BrowserConfig(
+            profile_dir=tmp_path,
+            cdp_endpoint="http://127.0.0.1:9222",
+        )
+    )
+    manager._context = FakeContext()
+    manager._playwright = FakePlaywright()
+    manager._browser = object()
+    manager._owns_context = False
+
+    await manager.close()
+
+    assert events == ["playwright.stop"]
+    assert manager._context is None
+    assert manager._playwright is None
+    assert manager._browser is None
 
 
 @pytest.mark.asyncio

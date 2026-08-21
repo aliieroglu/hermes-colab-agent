@@ -204,6 +204,7 @@ Once installed (via `uv run` or `uvx git+https://github.com/aliieroglu/hermes-co
 | `--browser-channel NAME` | Playwright browser channel. Default: `chrome`; use `chromium` with an installed Playwright Chromium |
 | `--browser-executable PATH` | Explicit Chrome/Chromium binary; overrides the configured channel |
 | `--browser-headless` | Run headlessly. Complete first login and permissions in visible mode before using this |
+| `--browser-cdp-endpoint URL` | Attach to an existing loopback-only Chrome DevTools endpoint (for example `http://127.0.0.1:9222`) instead of launching another browser |
 | `--no-playwright-browser` | Disable Playwright browser management. Secure MCP connection opening is unavailable in this mode because the token is never placed in a system-browser command-line URL |
 | `--list-running` | Print every currently-running `colab-mcp` server (pid, port, host, start time) and exit. Useful when "Disconnected from the local Colab MCP server" appears |
 | `--kill-stale` | Terminate every running `colab-mcp` server, clear its registry entry, and exit. Use this from a regular shell (NOT from inside Claude Code) before starting a fresh session |

@@ -29,6 +29,21 @@ class BrowserConfig:
     executable_path: Path | None = None
     headless: bool = False
     channel: str | None = None
+    cdp_endpoint: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.cdp_endpoint is None:
+            return
+        parsed = urlsplit(self.cdp_endpoint)
+        if (
+            parsed.scheme not in {"http", "https", "ws", "wss"}
+            or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            raise ValueError(
+                "CDP endpoint must be an uncredentialed loopback URL"
+            )
 
 
 @dataclass(frozen=True)
@@ -66,7 +81,9 @@ class ColabBrowserManager:
         self.config = config
         self._playwright_starter = playwright_starter or _start_playwright
         self._playwright = None
+        self._browser = None
         self._context = None
+        self._owns_context = True
         self._start_lock = asyncio.Lock()
         self._open_lock = asyncio.Lock()
 
@@ -81,20 +98,44 @@ class ColabBrowserManager:
             if self._playwright is not None:
                 await self._playwright.stop()
                 self._playwright = None
-            self.config.profile_dir.mkdir(parents=True, exist_ok=True)
             self._playwright = await self._playwright_starter()
-            launch_options: dict[str, Any] = {"headless": self.config.headless}
-            if self.config.executable_path is not None:
-                launch_options["executable_path"] = str(self.config.executable_path)
-            elif self.config.channel is not None:
-                launch_options["channel"] = self.config.channel
             try:
-                self._context = (
-                    await self._playwright.chromium.launch_persistent_context(
-                        str(self.config.profile_dir),
-                        **launch_options,
+                if self.config.cdp_endpoint is not None:
+                    self._browser = await self._playwright.chromium.connect_over_cdp(
+                        self.config.cdp_endpoint
                     )
-                )
+                    if not self._browser.contexts:
+                        raise RuntimeError("CDP browser has no usable context")
+                    self._context = self._browser.contexts[0]
+                    self._owns_context = False
+                    browser = self._browser
+
+                    def mark_disconnected(*_args) -> None:
+                        if self._browser is browser:
+                            self._browser = None
+                            self._context = None
+                            self._owns_context = True
+
+                    if hasattr(browser, "on"):
+                        browser.on("disconnected", mark_disconnected)
+                else:
+                    self.config.profile_dir.mkdir(parents=True, exist_ok=True)
+                    launch_options: dict[str, Any] = {
+                        "headless": self.config.headless
+                    }
+                    if self.config.executable_path is not None:
+                        launch_options["executable_path"] = str(
+                            self.config.executable_path
+                        )
+                    elif self.config.channel is not None:
+                        launch_options["channel"] = self.config.channel
+                    self._context = (
+                        await self._playwright.chromium.launch_persistent_context(
+                            str(self.config.profile_dir),
+                            **launch_options,
+                        )
+                    )
+                    self._owns_context = True
                 context = self._context
 
                 def mark_closed(*_args) -> None:
@@ -104,12 +145,19 @@ class ColabBrowserManager:
                 if hasattr(context, "on"):
                     context.on("close", mark_closed)
             except Exception:
+                self._browser = None
+                self._context = None
+                self._owns_context = True
                 playwright, self._playwright = self._playwright, None
                 if playwright is not None:
                     try:
                         await playwright.stop()
                     except Exception:
                         pass
+                if self.config.cdp_endpoint is not None:
+                    raise BrowserLaunchError(
+                        "Failed to attach to the configured loopback CDP browser."
+                    ) from None
                 raise BrowserLaunchError(
                     "Failed to launch the persistent browser profile at "
                     f"{self.config.profile_dir}. Ensure the profile is not already in use "
@@ -248,8 +296,10 @@ class ColabBrowserManager:
     async def close(self) -> None:
         context, self._context = self._context, None
         playwright, self._playwright = self._playwright, None
+        self._browser = None
+        owns_context, self._owns_context = self._owns_context, True
         try:
-            if context is not None:
+            if context is not None and owns_context:
                 await context.close()
         finally:
             if playwright is not None:
