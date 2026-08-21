@@ -171,7 +171,13 @@ class ColabBrowserManager:
             await page.bring_to_front()
             title = await page.title()
         except Exception:
-            if created_page:
+            cleanup_failed = False
+            if connection_token is not None:
+                try:
+                    await _clear_page_fragment(page)
+                except Exception:
+                    cleanup_failed = True
+            if created_page or cleanup_failed:
                 try:
                     await page.close()
                 except Exception:
@@ -203,15 +209,11 @@ class ColabBrowserManager:
             raise BrowserNavigationError(
                 "Could not find the matching Colab tab to clear connection state"
             )
-        if urlsplit(page.url).fragment:
-            await page.evaluate(
-                "url => history.replaceState(null, '', url)",
-                _redact_browser_url(page.url),
+        await _clear_page_fragment(page)
+        if not _same_notebook(page.url, target_parts):
+            raise BrowserNavigationError(
+                "Could not verify the matching Colab tab after clearing connection state"
             )
-            if urlsplit(page.url).fragment:
-                raise BrowserNavigationError(
-                    "Could not verify the Colab connection fragment was cleared"
-                )
 
     async def list_colab_tabs(self) -> list[ColabTab]:
         context = await self.ensure_started()
@@ -279,6 +281,19 @@ def _same_notebook(candidate_url: str, target_parts) -> bool:
 def _redact_browser_url(url: str) -> str:
     parsed = urlsplit(url)
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, ""))
+
+
+async def _clear_page_fragment(page) -> None:
+    if not urlsplit(page.url).fragment:
+        return
+    await page.evaluate(
+        "url => history.replaceState(null, '', url)",
+        _redact_browser_url(page.url),
+    )
+    if urlsplit(page.url).fragment:
+        raise BrowserNavigationError(
+            "Could not verify the Colab connection fragment was cleared"
+        )
 
 
 def normalize_notebook_target(target: str) -> str:

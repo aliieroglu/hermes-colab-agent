@@ -593,6 +593,56 @@ async def test_navigation_errors_do_not_expose_connection_token(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reused_tab_fragment_is_cleared_if_post_navigation_step_fails(tmp_path):
+    browser_manager = importlib.import_module("colab_mcp.browser_manager")
+    drive_id = "11-SndejEz6MCYARW021CFjs5SCI9EXW"
+    evaluations = []
+
+    class FakePage:
+        url = f"https://colab.research.google.com/drive/{drive_id}"
+
+        async def goto(self, url, **kwargs):
+            self.url = url
+
+        async def bring_to_front(self):
+            raise RuntimeError(f"failed while handling {self.url}")
+
+        async def evaluate(self, expression, argument):
+            evaluations.append((expression, argument))
+            self.url = argument
+
+        async def close(self):
+            raise AssertionError("reused tab should remain open after secure cleanup")
+
+    page = FakePage()
+
+    class FakeContext:
+        pages = [page]
+
+    manager = browser_manager.ColabBrowserManager(
+        browser_manager.BrowserConfig(profile_dir=tmp_path)
+    )
+    manager._context = FakeContext()
+
+    with pytest.raises(browser_manager.BrowserNavigationError) as error:
+        await manager.open_notebook(
+            drive_id,
+            connection_port=18585,
+            connection_token="do-not-leak",
+        )
+
+    assert "do-not-leak" not in str(error.value)
+    assert "do-not-leak" not in page.url
+    assert "#" not in page.url
+    assert evaluations == [
+        (
+            "url => history.replaceState(null, '', url)",
+            f"https://colab.research.google.com/drive/{drive_id}?p=18585",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_list_colab_tabs_excludes_other_sites_and_redacts_fragments(tmp_path):
     browser_manager = importlib.import_module("colab_mcp.browser_manager")
 
