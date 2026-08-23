@@ -469,3 +469,81 @@ async def test_runner_is_uploaded_once_and_reused(tmp_path, local_jobs_dir):
 
     assert first == {"runner": "uploaded"}
     assert second == {"runner": "present"}
+
+
+def test_classify_stage_reruns_a_failure_whose_code_changed(tmp_path, local_jobs_dir):
+    manifest = make_manifest(tmp_path, [{"id": "step", "code": "print('fixed')\n"}])
+    state = {
+        "now": 1.0,
+        "done": {},
+        "status": {"step": {"state": "failed", "code_sha": "sha-of-old-code"}},
+    }
+
+    verdict = jobs.classify_stage(manifest, manifest.stages[0], state)
+
+    assert verdict["state"] == "pending"
+    assert "no longer applies" in verdict["detail"]
+
+
+def test_classify_stage_keeps_a_failure_whose_code_is_unchanged(
+    tmp_path, local_jobs_dir
+):
+    manifest = make_manifest(
+        tmp_path, [{"id": "step", "code": "raise SystemExit(1)\n"}]
+    )
+    stage = manifest.stages[0]
+    state = {
+        "now": 1.0,
+        "done": {},
+        "status": {"step": {"state": "failed", "code_sha": stage.code_sha()}},
+    }
+
+    assert jobs.classify_stage(manifest, stage, state)["state"] == "failed"
+
+
+def test_classify_stage_treats_success_without_a_marker_as_pending(
+    tmp_path, local_jobs_dir
+):
+    manifest = make_manifest(tmp_path, [{"id": "step", "code": "print(1)\n"}])
+    stage = manifest.stages[0]
+    state = {
+        "now": 1.0,
+        "done": {},
+        "status": {"step": {"state": "succeeded", "code_sha": stage.code_sha()}},
+    }
+
+    verdict = jobs.classify_stage(manifest, stage, state)
+
+    assert verdict["state"] == "pending"
+    assert "completion marker" in verdict["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_fixed_stage_reruns_without_an_explicit_reset(tmp_path, local_jobs_dir):
+    out = tmp_path / "out.txt"
+    broken = make_manifest(
+        tmp_path,
+        [{"id": "step", "code": "raise SystemExit('boom')\n", "artifacts": [str(out)]}],
+    )
+    colab = FakeColab()
+    failure = await jobs.advance_job(
+        colab.call_tool, broken, wait_sec=30, poll_interval_sec=0.05, sleep=_fast_sleep
+    )
+    assert failure["status"] == "failed"
+
+    fixed = make_manifest(
+        tmp_path,
+        [
+            {
+                "id": "step",
+                "code": f"import pathlib\npathlib.Path({str(out)!r}).write_text('ok')\n",
+                "artifacts": [str(out)],
+            }
+        ],
+    )
+    result = await jobs.advance_job(
+        colab.call_tool, fixed, wait_sec=30, poll_interval_sec=0.05, sleep=_fast_sleep
+    )
+
+    assert result["status"] == "completed"
+    assert out.read_text() == "ok"

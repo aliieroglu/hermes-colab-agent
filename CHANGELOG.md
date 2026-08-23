@@ -42,6 +42,12 @@ four-hour job dies with it. This adds a job layer that does not.
   `done` marker still read as "completed" until the new process overwrote it.
   `launch_stage` now clears the previous marker, status, and log first, and
   `advance_job` refuses to launch the same stage twice in one call.
+- A stage that failed, was fixed, and re-run stayed failed forever: the old
+  `failed` status was read without checking whose code produced it, so
+  `run_job` reported the stale failure instead of running the new code.
+  Terminal statuses are now matched against the stage's current code hash, and
+  a `succeeded` status with no matching completion marker re-runs, since the
+  marker - not the status file - is the authority on completion.
 
 ### Not yet verified
 The job runner has integration coverage locally - the tests execute the real

@@ -540,6 +540,29 @@ def classify_stage(
         }
 
     recorded = status.get("state")
+    recorded_sha = status.get("code_sha")
+    if recorded in TERMINAL_STATES and recorded_sha != stage.code_sha():
+        return {
+            "stage": stage.id,
+            "state": "pending",
+            "status": status,
+            "detail": (
+                "The recorded run used different code, so its outcome no longer "
+                "applies and the stage will run again."
+            ),
+        }
+    if recorded == "succeeded":
+        # A matching marker would have been caught above, so the marker is gone
+        # or belongs to other code. The marker is the authority on completion.
+        return {
+            "stage": stage.id,
+            "state": "pending",
+            "status": status,
+            "detail": (
+                "The stage reports success but has no matching completion "
+                "marker, so it will run again."
+            ),
+        }
     if recorded == "running":
         heartbeat = status.get("heartbeat")
         age = (
@@ -564,6 +587,18 @@ def classify_stage(
             "state": "running",
             "heartbeat_age_sec": None if age is None else round(age, 1),
             "status": status,
+            **(
+                {
+                    "detail": (
+                        "This process was started from different stage code. It "
+                        "is still running, so it is left alone; call "
+                        "interrupt_runtime or reset_job_stage to stop waiting "
+                        "on it."
+                    )
+                }
+                if recorded_sha != stage.code_sha()
+                else {}
+            ),
         }
     if recorded in TERMINAL_STATES:
         return {"stage": stage.id, "state": recorded, "status": status}
@@ -614,9 +649,11 @@ async def advance_job(
                 "status": "failed",
                 "stage": failed["stage"],
                 "detail": (
-                    f"Stage {failed['stage']} failed. Inspect its log, fix the "
-                    "stage code, then call run_job again - completed stages are "
-                    "skipped, and a stage whose code changed re-runs."
+                    f"Stage {failed['stage']} failed. Inspect its log, then "
+                    "either re-create the job with fixed stage code (a stage "
+                    "whose code changed re-runs automatically) or call "
+                    "reset_job_stage to retry it unchanged. Stages that already "
+                    "completed are skipped either way."
                 ),
             }
 
