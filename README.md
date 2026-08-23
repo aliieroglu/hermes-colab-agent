@@ -21,7 +21,7 @@ Four concrete problems that the official `googlecolab/colab-mcp` doesn't solve �
 3. **No deterministic browser bootstrap** — system-browser calls can target the wrong profile or stale tab. Playwright now owns a dedicated persistent profile and selects notebooks semantically by URL/Drive ID.
 4. **No programmatic GPU control** — Google [removed](https://github.com/googlecolab/colab-mcp/discussions/41) the `--enable-runtime` feature entirely. You can't assign T4 / L4 / A100 without clicking in the browser.
 
-This fork pre-registers all 12 tools, manages a dedicated Chrome profile, redacts connection fragments from status output, detects stale servers, and retains the optional OAuth runtime client.
+This fork pre-registers all 19 tools, manages a dedicated Chrome profile, redacts connection fragments from status output, detects stale servers, and retains the optional OAuth runtime client.
 
 ## What's Different
 
@@ -53,8 +53,62 @@ This fork pre-registers all 12 tools, manages a dedicated Chrome profile, redact
 | `update_cell` | Yes | | Edit an existing cell by `cellId` |
 | `delete_cell` | Yes | | Delete a cell by `cellId` |
 | `move_cell` | Yes | | Move a cell to a new position by `cellId` |
+| `wait_for_cell` | Yes | | Poll a running cell until it finishes, instead of blocking the MCP call |
+| `reconnect_notebook` | Yes | | Re-run the full connect + verification flow after the tab dropped |
+| `get_runtime_status` | Yes | | Read the runtime indicator (connected / connecting / disconnected / unknown) |
+| `interrupt_runtime` | Yes | | Experimental: interrupt the executing cell, keeping runtime state |
+| `restart_runtime` | Yes | | Experimental: restart the runtime, discarding all state |
+| `upload_file` | Yes | | Copy a local file into the runtime, verified with SHA-256 |
+| `download_file` | Yes | | Copy a file out of the runtime to this machine, verified with SHA-256 |
 
 > **Note:** `execute_cell` was renamed to `run_code_cell` in 2026-06-16 to match the browser-side handler name. Pass a `cellId` (from `add_code_cell` or `get_cells`) — the old `cellIndex` fallback was removed.
+
+## Long-Running Jobs, Runtime Control, and File Transfer
+
+`run_code_cell` returns only when Colab has finished executing, which makes it
+unusable for anything long: the MCP call blocks with no progress and clients
+eventually give up. The tools below cover that gap.
+
+### Waiting on a long cell
+
+```
+add_code_cell(code="train(epochs=50)")        -> {"newCellId": "abc123"}
+run_code_cell(cellId="abc123")                 # may exceed the client timeout
+wait_for_cell(cellId="abc123", timeout_sec=900)
+> {"status": "running" | "completed" | "timeout" | "missing" | "unknown", ...}
+```
+
+`wait_for_cell` polls `get_cells` instead of holding the call open. A
+`timeout` result means *the wait* expired - the cell keeps running in Colab, so
+poll again or call `interrupt_runtime`. Colab does not document a stable
+execution-state field, so when none of the known fields is present the status is
+reported as `unknown` together with the raw cell, rather than being guessed.
+
+### Moving files in and out of the runtime
+
+```
+upload_file(local_path="./data.parquet", remote_path="/content/data.parquet")
+download_file(remote_path="/content/ckpt.pt", local_path="./ckpt.pt")
+```
+
+Bytes travel as base64 through a temporary code cell that is deleted afterwards,
+and both directions verify a SHA-256 computed on both sides, so a truncated
+chunk fails loudly instead of writing a corrupted file. The default ceiling is
+25 MB per transfer (`max_bytes`); stage larger artifacts through Drive.
+
+### Runtime control (experimental)
+
+`get_runtime_status`, `interrupt_runtime`, and `restart_runtime` read the Colab
+UI and send Colab's own keyboard shortcuts to the managed tab, because Colab
+exposes no local API for them. That makes them the most fragile part of this
+server: they degrade to an `unknown` state and return the raw probe rather than
+asserting something they could not confirm. `restart_runtime` discards every
+bit of runtime state - variables, pip installs, and files outside Drive.
+
+> These three tools have unit coverage but have **not** yet been verified
+> against a live Colab notebook. Treat their results as advisory until they are.
+
+---
 
 ## Quick Start (Without OAuth)
 
@@ -106,7 +160,7 @@ Add to your `.mcp.json` (Claude Code, Cursor, etc.):
 ### 4. Use it
 
 1. Restart your editor / reload the MCP client.
-2. All 11 non-OAuth tools should appear immediately.
+2. All 18 non-OAuth tools should appear immediately.
 3. **First use only:** call `open_colab_notebook` with the target Drive ID or trusted Colab URL. This opens the dedicated profile **without an MCP token**.
 4. In that visible Chrome window, sign in to Google and complete 2FA yourself. Never paste credentials, cookies, or 2FA codes into the agent chat.
 5. After the notebook loads while signed in, call `open_colab_browser_connection` with the same Drive ID/URL. With no argument it targets the scratchpad.

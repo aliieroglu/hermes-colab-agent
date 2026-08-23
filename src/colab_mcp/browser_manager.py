@@ -236,8 +236,8 @@ class ColabBrowserManager:
             selected=True,
         )
 
-    async def clear_connection_fragment(self, target: str) -> None:
-        """Remove an MCP fragment from the matching tab's current history entry."""
+    async def notebook_page(self, target: str, *, purpose: str = "control"):
+        """Return the open page for ``target``, or raise a token-safe error."""
         normalized = normalize_notebook_target(target)
         context = await self.ensure_started()
         target_parts = urlsplit(normalized)
@@ -251,8 +251,15 @@ class ColabBrowserManager:
         )
         if page is None:
             raise BrowserNavigationError(
-                "Could not find the matching Colab tab to clear connection state"
+                f"Could not find the matching Colab tab to {purpose}"
             )
+        return page
+
+    async def clear_connection_fragment(self, target: str) -> None:
+        """Remove an MCP fragment from the matching tab's current history entry."""
+        normalized = normalize_notebook_target(target)
+        target_parts = urlsplit(normalized)
+        page = await self.notebook_page(normalized, purpose="clear connection state")
         await _clear_page_fragment(page)
         if not _same_notebook(page.url, target_parts):
             raise BrowserNavigationError(

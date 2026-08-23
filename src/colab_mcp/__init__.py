@@ -30,7 +30,7 @@ from fastmcp.utilities import logging as fastmcp_logger
 from colab_mcp.session import ColabSessionProxy, NOT_CONNECTED_MSG
 from colab_mcp.websocket_server import COLAB, SCRATCH_PATH
 from colab_mcp.browser_manager import BrowserConfig, ColabBrowserManager
-from colab_mcp import process_registry
+from colab_mcp import notebook_ops, process_registry, runtime_ops
 
 
 mcp = FastMCP(name="ColabMCP")
@@ -40,6 +40,51 @@ _proxy_client = None
 _session_mcp = None
 _colab_client = None  # For runtime API (assign/unassign GPU)
 _browser_manager: ColabBrowserManager | None = None
+# Notebook most recently opened through this server. Runtime tools default to
+# it so an agent does not have to repeat the target on every call.
+_current_target: str | None = None
+
+
+def _resolve_target(notebook_url_or_drive_id: str = "") -> str:
+    """Pick the notebook a tool should act on."""
+    return notebook_url_or_drive_id or _current_target or f"{COLAB}{SCRATCH_PATH}"
+
+
+async def _proxy_call(tool_name: str, arguments: dict) -> str:
+    """Call a browser-side tool, raising instead of returning a stub message."""
+    if _proxy_client is None or not _proxy_client.is_connected():
+        raise notebook_ops.NotebookOpsError(NOT_CONNECTED_MSG)
+    result = await _proxy_client.proxy_mcp_client.call_tool(tool_name, arguments)
+    if hasattr(result, "content"):
+        return "\n".join(c.text for c in result.content if hasattr(c, "text"))
+    return str(result)
+
+
+async def _notebook_page(purpose: str, notebook_url_or_drive_id: str = ""):
+    """Return the managed page for a notebook, for UI-level control."""
+    if _browser_manager is None:
+        raise runtime_ops.RuntimeControlError(
+            "Playwright browser management is disabled, so the notebook UI "
+            "cannot be controlled."
+        )
+    return await _browser_manager.notebook_page(
+        _resolve_target(notebook_url_or_drive_id), purpose=purpose
+    )
+
+
+def _control_error(tool_name: str, exc: Exception) -> str:
+    """Render a control-tool failure without leaking URLs or tokens."""
+    if isinstance(exc, runtime_ops.RuntimeControlError):
+        return str(exc)
+    from colab_mcp.browser_manager import BrowserNavigationError
+
+    if isinstance(exc, BrowserNavigationError):
+        return (
+            f"{exc}. Open the notebook with open_colab_notebook first, or pass "
+            "its Drive ID explicitly."
+        )
+    logging.exception("%s failed", tool_name)
+    return f"{tool_name} failed: {type(exc).__name__}. See the server log for details."
 
 
 async def _forward_or_stub(tool_name: str, arguments: dict) -> str:
@@ -78,28 +123,21 @@ async def list_colab_tabs() -> str:
 @mcp.tool()
 async def open_colab_notebook(notebook_url_or_drive_id: str) -> str:
     """Open or reuse a trusted Colab notebook in the managed browser."""
+    global _current_target
     if _browser_manager is None:
         return "Playwright browser management is disabled."
     tab = await _browser_manager.open_notebook(notebook_url_or_drive_id)
+    _current_target = notebook_url_or_drive_id
     return json.dumps(asdict(tab))
 
 
-@mcp.tool()
-async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> str:
-    """Open a Colab notebook and attach its browser-side MCP proxy.
-
-    When omitted, ``notebook_url_or_drive_id`` opens Colab's scratchpad. A
-    Drive ID or trusted Colab URL selects an existing notebook tab when
-    possible. The connection token is passed only to the browser manager and
-    is never returned by this tool.
-    """
-    if _proxy_client is not None and _proxy_client.is_connected():
-        return "Already connected to Colab."
+async def _connect_to_notebook(target: str) -> str:
+    """Attach the browser-side MCP proxy to ``target`` and verify it works."""
+    global _current_target
 
     if _proxy_client is None:
         return "Server not initialized. Please wait and try again."
 
-    target = notebook_url_or_drive_id or f"{COLAB}{SCRATCH_PATH}"
     if _browser_manager is None:
         return (
             "Playwright browser management is disabled; refusing to place the "
@@ -110,6 +148,7 @@ async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> s
         connection_port=_proxy_client.wss.port,
         connection_token=_proxy_client.wss.token,
     )
+    _current_target = target
 
     # Wait for Colab to consume the fragment before removing it from the
     # current browser history entry. Also attempt removal after a timeout or
@@ -187,6 +226,36 @@ async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> s
 
 
 @mcp.tool()
+async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> str:
+    """Open a Colab notebook and attach its browser-side MCP proxy.
+
+    When omitted, ``notebook_url_or_drive_id`` opens Colab's scratchpad. A
+    Drive ID or trusted Colab URL selects an existing notebook tab when
+    possible. The connection token is passed only to the browser manager and
+    is never returned by this tool.
+    """
+    if _proxy_client is not None and _proxy_client.is_connected():
+        return "Already connected to Colab."
+    return await _connect_to_notebook(
+        notebook_url_or_drive_id or f"{COLAB}{SCRATCH_PATH}"
+    )
+
+
+@mcp.tool()
+async def reconnect_notebook(notebook_url_or_drive_id: str = "") -> str:
+    """Re-attach the browser-side MCP proxy after the Colab tab dropped.
+
+    Unlike open_colab_browser_connection this does not short-circuit when the
+    server still believes it is connected: it re-runs the full connect and
+    verification flow. Use it when notebook tools start failing mid-session,
+    which usually means the tab reloaded, the runtime was recycled, or the
+    laptop slept.
+    """
+    target = _resolve_target(notebook_url_or_drive_id)
+    return await _connect_to_notebook(target)
+
+
+@mcp.tool()
 async def add_code_cell(
     code: str = "", cellIndex: int = 0, language: str = "python"
 ) -> str:
@@ -234,6 +303,136 @@ async def move_cell(cellId: str = "", cellIndex: int = 0) -> str:
     return await _forward_or_stub(
         "move_cell", {"cellId": cellId, "cellIndex": cellIndex}
     )
+
+
+@mcp.tool()
+async def wait_for_cell(
+    cellId: str = "",
+    timeout_sec: float = 600.0,
+    poll_interval_sec: float = 3.0,
+) -> str:
+    """Wait for a running cell to finish, polling the notebook instead of blocking.
+
+    run_code_cell returns only once Colab finishes executing, which is unusable
+    for long jobs: the MCP call blocks with no progress and clients time out.
+    Start such work in the notebook, then poll here. Returns JSON with status
+    completed / running / timeout / missing / unknown - a timeout means the wait
+    expired, not that the cell stopped, so poll again or call interrupt_runtime.
+    Requires an active browser connection.
+    """
+    try:
+        result = await notebook_ops.wait_for_cell(
+            _proxy_call,
+            cellId,
+            timeout_sec=timeout_sec,
+            poll_interval_sec=poll_interval_sec,
+        )
+    except notebook_ops.NotebookOpsError as exc:
+        return str(exc)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def get_runtime_status(notebook_url_or_drive_id: str = "") -> str:
+    """Report whether the Colab runtime is connected, plus RAM/disk if shown.
+
+    Read from the notebook UI, because Colab exposes no local API for it.
+    Returns JSON with state connected / connecting / disconnected / unknown and
+    the raw probe; unknown means the indicator could not be interpreted, not
+    that the runtime is down. Defaults to the notebook most recently opened by
+    this server.
+    """
+    try:
+        page = await _notebook_page("read runtime status", notebook_url_or_drive_id)
+        return json.dumps(await runtime_ops.read_runtime_status(page))
+    except Exception as exc:
+        return _control_error("get_runtime_status", exc)
+
+
+@mcp.tool()
+async def interrupt_runtime(notebook_url_or_drive_id: str = "") -> str:
+    """Interrupt the cell currently executing, keeping variables and files.
+
+    Experimental: delivered as Colab's own keyboard shortcut to the managed
+    tab, so it depends on Colab's UI. Confirm the effect with get_cells or
+    wait_for_cell.
+    """
+    try:
+        page = await _notebook_page("interrupt the runtime", notebook_url_or_drive_id)
+        return json.dumps(await runtime_ops.interrupt_runtime(page))
+    except Exception as exc:
+        return _control_error("interrupt_runtime", exc)
+
+
+@mcp.tool()
+async def restart_runtime(notebook_url_or_drive_id: str = "") -> str:
+    """Restart the Colab runtime, discarding all in-memory and /content state.
+
+    Experimental: delivered as Colab's own keyboard shortcut to the managed
+    tab, and any confirmation dialog is accepted automatically. Everything the
+    session held - variables, pip installs, files outside Drive - is lost.
+    """
+    try:
+        page = await _notebook_page("restart the runtime", notebook_url_or_drive_id)
+        return json.dumps(await runtime_ops.restart_runtime(page))
+    except Exception as exc:
+        return _control_error("restart_runtime", exc)
+
+
+@mcp.tool()
+async def upload_file(
+    local_path: str = "",
+    remote_path: str = "",
+    chunk_bytes: int = notebook_ops.DEFAULT_CHUNK_BYTES,
+    max_bytes: int = notebook_ops.MAX_TRANSFER_BYTES,
+) -> str:
+    """Copy a local file into the Colab runtime, verified with SHA-256.
+
+    The bytes travel as base64 through a temporary code cell that is removed
+    afterwards. Intended for datasets, configs, and checkpoints up to a few
+    tens of MB; stage anything larger through Drive. Requires an active
+    browser connection.
+    """
+    try:
+        result = await notebook_ops.upload_file(
+            _proxy_call,
+            local_path,
+            remote_path,
+            chunk_bytes=chunk_bytes,
+            max_bytes=max_bytes,
+        )
+    except notebook_ops.NotebookOpsError as exc:
+        return str(exc)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def download_file(
+    remote_path: str = "",
+    local_path: str = "",
+    chunk_bytes: int = notebook_ops.DEFAULT_CHUNK_BYTES,
+    max_bytes: int = notebook_ops.MAX_TRANSFER_BYTES,
+    overwrite: bool = False,
+) -> str:
+    """Copy a file out of the Colab runtime to this machine, verified with SHA-256.
+
+    Reads the file back as base64 through a temporary code cell that is removed
+    afterwards. Use it to rescue checkpoints and logs before a runtime is
+    recycled. Refuses to replace an existing local file unless overwrite=True.
+    Requires an active browser connection.
+    """
+    try:
+        result = await notebook_ops.download_file(
+            _proxy_call,
+            remote_path,
+            local_path,
+            chunk_bytes=chunk_bytes,
+            max_bytes=max_bytes,
+            overwrite=overwrite,
+        )
+    except notebook_ops.NotebookOpsError as exc:
+        return str(exc)
+    return json.dumps(result)
 
 
 @mcp.tool()

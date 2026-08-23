@@ -6,6 +6,43 @@ This fork follows the upstream `1.0.x` baseline and tags fork-specific work
 with the date of the change. Upstream-merged work keeps its own commit
 history.
 
+## 2026-08-23 - Runtime, wait, and file-transfer tools (Phase 2)
+
+Phase 1 made the connection reliable; the tool surface still stopped at cell
+CRUD. An agent could start a 40-minute training cell and then had no way to
+follow it, no way to recover a dropped tab, and no way to get a checkpoint
+back out. This closes those gaps. Tool count goes from 12 to 19.
+
+### Added
+- **`wait_for_cell(cellId, timeout_sec, poll_interval_sec)`** - polls
+  `get_cells` until the cell stops executing instead of holding the MCP call
+  open. Returns `completed` / `running` / `timeout` / `missing` / `unknown`;
+  a timeout is the *wait* expiring, not the cell stopping. Colab documents no
+  stable execution-state field, so several spellings are checked and an
+  unrecognised payload is reported as `unknown` with the raw cell attached.
+- **`reconnect_notebook(notebook_url_or_drive_id)`** - re-runs the full
+  connect + `get_cells` verification flow, without
+  `open_colab_browser_connection`'s "Already connected" short-circuit, for
+  when the tab reloaded or the machine slept.
+- **`upload_file` / `download_file`** - move files between this machine and
+  the runtime as base64 through a scratch cell that is deleted afterwards.
+  Both directions compare a SHA-256 computed on both sides, so a truncated
+  chunk fails loudly. 25 MB default ceiling, `overwrite` guard on download.
+- **`get_runtime_status` / `interrupt_runtime` / `restart_runtime`
+  (experimental)** - read the Colab connect indicator and send Colab's own
+  keyboard shortcuts (Ctrl+M I, Ctrl+M .) to the managed tab, since no local
+  API exposes them. They report `unknown` with the raw probe rather than
+  claiming a state they could not confirm.
+- New modules `notebook_ops.py` (transport-free notebook logic) and
+  `runtime_ops.py` (UI-level control), plus `ColabBrowserManager.notebook_page`
+  for token-safe page lookup. 54 new tests; suite is now 132.
+
+### Not yet verified
+The three runtime-control tools and the file transfers have unit coverage but
+have **not** been exercised against a live Colab notebook. The DOM probe,
+the two keyboard shortcuts, and the restart confirmation dialog are the parts
+most likely to need adjustment after a real E2E run.
+
 ## 2026-08-23 - CI pipeline (Phase C)
 
 ### Added

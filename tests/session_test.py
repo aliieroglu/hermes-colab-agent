@@ -71,6 +71,7 @@ class TestDirectTools:
             tool_names = {t.name for t in tools}
             assert tool_names == {
                 "open_colab_browser_connection",
+                "reconnect_notebook",
                 "add_code_cell",
                 "add_text_cell",
                 "get_cells",
@@ -78,7 +79,13 @@ class TestDirectTools:
                 "update_cell",
                 "delete_cell",
                 "move_cell",
+                "wait_for_cell",
                 "change_runtime",
+                "get_runtime_status",
+                "interrupt_runtime",
+                "restart_runtime",
+                "upload_file",
+                "download_file",
                 "get_colab_browser_status",
                 "list_colab_tabs",
                 "open_colab_notebook",
