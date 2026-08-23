@@ -171,7 +171,8 @@ async def test_manager_launches_persistent_context_with_dedicated_profile(tmp_pa
         str(profile_dir),
         {
             "headless": True,
-            "executable_path": "/opt/google/chrome",
+            # str(Path(...)) so the expectation matches on Windows too.
+            "executable_path": str(Path("/opt/google/chrome")),
         },
     )
     assert calls[-2:] == [("context.close",), ("playwright.stop",)]
@@ -847,7 +848,7 @@ def test_status_reports_running_context_without_sensitive_data(tmp_path):
     assert status == browser_manager.BrowserStatus(
         running=True,
         profile_dir=str(tmp_path),
-        executable_path="/opt/chrome",
+        executable_path=str(Path("/opt/chrome")),
         headless=True,
         tab_count=2,
         colab_tab_count=1,
