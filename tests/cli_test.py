@@ -12,6 +12,8 @@ def test_browser_cli_defaults_to_dedicated_visible_chrome_profile(
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Path.home() reads USERPROFILE on Windows, HOME elsewhere.
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     args = parse_args(["--log", str(tmp_path / "logs")])
 

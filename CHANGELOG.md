@@ -6,6 +6,27 @@ This fork follows the upstream `1.0.x` baseline and tags fork-specific work
 with the date of the change. Upstream-merged work keeps its own commit
 history.
 
+## 2026-08-23 - CI pipeline (Phase C)
+
+### Added
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): `ruff check` +
+  `ruff format --check` on Ubuntu, the full pytest suite on Ubuntu / macOS /
+  Windows, and a build job that produces the wheel + sdist, installs the
+  wheel into a clean virtualenv and asserts the `colab-mcp` entry point
+  runs. Until now the 78 tests and the linter only ran in a local
+  pre-commit hook, so nothing verified pushed commits.
+- **Dependabot** (`.github/dependabot.yml`): monthly GitHub Actions and uv
+  dependency updates.
+
+### Fixed
+- `tests/cli_test.py` patched `HOME` only, so the default-profile assertion
+  could not pass on Windows, where `Path.home()` reads `USERPROFILE`. Both
+  are now set, making the suite genuinely cross-platform.
+
+### Changed
+- Applied `ruff format` to the whole tree (7 files were unformatted), so the
+  formatting gate in CI has a clean baseline. Mechanical change only.
+
 ## 2026-06-19 — E2E validated against real Colab + move_cell signature correction
 
 After driving the full smoke E2E against a real Colab notebook (see

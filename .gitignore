@@ -3,3 +3,5 @@ development-methodology/
 
 # Local architecture and research reports. Intentionally never published.
 docs/
+dist/
+.venv/

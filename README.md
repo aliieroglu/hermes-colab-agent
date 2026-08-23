@@ -1,5 +1,6 @@
 # Hermes Colab Agent
 
+[![CI](https://github.com/aliieroglu/hermes-colab-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/aliieroglu/hermes-colab-agent/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue.svg)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/protocol-MCP-purple.svg)](https://modelcontextprotocol.io)
