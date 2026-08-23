@@ -22,7 +22,9 @@ import websockets
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("origin_domain", ["https://colab.google.com", "https://colab.research.google.com"])
+@pytest.mark.parametrize(
+    "origin_domain", ["https://colab.google.com", "https://colab.research.google.com"]
+)
 async def test_successful_connection(origin_domain):
     async with ColabWebSocketServer() as server:
         client = await websockets.connect(
@@ -259,7 +261,9 @@ async def test_cors_preflight_responds_with_pna_headers():
             await writer.wait_closed()
 
         text = raw.decode("latin-1")
-        assert text.startswith("HTTP/1.1 204"), f"expected 204 No Content, got: {text[:80]}"
+        assert text.startswith("HTTP/1.1 204"), (
+            f"expected 204 No Content, got: {text[:80]}"
+        )
         # Parse headers case-insensitively
         headers = {}
         for line in text.split("\r\n")[1:]:
@@ -293,9 +297,9 @@ async def test_websocket_handshake_response_has_pna_header():
             additional_headers={"Authorization": f"Bearer {server.token}"},
         )
         response_headers = dict(client.response.headers)
-        assert _ci_get(response_headers, "Access-Control-Allow-Private-Network") == "true", (
-            f"PNA header missing from handshake 101; got: {response_headers}"
-        )
+        assert (
+            _ci_get(response_headers, "Access-Control-Allow-Private-Network") == "true"
+        ), f"PNA header missing from handshake 101; got: {response_headers}"
         await client.close()
 
 

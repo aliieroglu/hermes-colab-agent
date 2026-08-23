@@ -65,6 +65,7 @@ class TestDirectTools:
     @pytest.mark.asyncio
     async def test_mcp_has_expected_tools(self):
         from colab_mcp import mcp
+
         async with Client(mcp) as client:
             tools = await client.list_tools()
             tool_names = {t.name for t in tools}
@@ -86,11 +87,10 @@ class TestDirectTools:
     @pytest.mark.asyncio
     async def test_stub_returns_not_connected_when_no_proxy(self):
         from colab_mcp import mcp
+
         async with Client(mcp) as client:
             result = await client.call_tool("add_code_cell", {"code": "print('hi')"})
-            assert any(
-                session.NOT_CONNECTED_MSG in c.text for c in result.content
-            )
+            assert any(session.NOT_CONNECTED_MSG in c.text for c in result.content)
 
     @pytest.mark.asyncio
     async def test_connection_tool_opens_requested_notebook_with_playwright(
@@ -118,9 +118,7 @@ class TestDirectTools:
             def __init__(self):
                 self.connected = False
                 self.wss = SimpleNamespace(port=18585, token="do-not-log")
-                self.proxy_mcp_client = SimpleNamespace(
-                    call_tool=self.call_tool
-                )
+                self.proxy_mcp_client = SimpleNamespace(call_tool=self.call_tool)
 
             async def call_tool(self, name, arguments):
                 semantic_probes.append((name, arguments))
@@ -181,7 +179,9 @@ class TestDirectTools:
         mock_webbrowser.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_connection_fragment_is_cleared_after_connection_attempt(self, monkeypatch):
+    async def test_connection_fragment_is_cleared_after_connection_attempt(
+        self, monkeypatch
+    ):
         import colab_mcp
 
         events = []
@@ -317,9 +317,7 @@ class TestAwaitToolsReady:
         client.proxy_mcp_client = AsyncMock()
         mock_tool = Mock()
         mock_tool.name = "run_code_cell"
-        client.proxy_mcp_client.list_tools = AsyncMock(
-            side_effect=[[], [mock_tool]]
-        )
+        client.proxy_mcp_client.list_tools = AsyncMock(side_effect=[[], [mock_tool]])
 
         with patch("colab_mcp.session.TOOLS_READY_POLL_INTERVAL", 0.01):
             result = await client.await_tools_ready()

@@ -232,7 +232,9 @@ def _make_injected_tools(
             return True
         return False
 
-    async def add_code_cell_stub(code: str = "", cellIndex: int = 0, language: str = "python") -> str:
+    async def add_code_cell_stub(
+        code: str = "", cellIndex: int = 0, language: str = "python"
+    ) -> str:
         return NOT_CONNECTED_MSG
 
     async def add_text_cell_stub(content: str = "", cellIndex: int = -1) -> str:

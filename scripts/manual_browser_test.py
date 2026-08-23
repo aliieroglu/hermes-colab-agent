@@ -46,8 +46,12 @@ async def main():
             await asyncio.wait_for(wss.connection_live.wait(), timeout=WAIT_SECONDS)
             print()
             print(">>> CONNECTED — browser successfully established WebSocket")
-            print(">>> Keeping server alive for 60 more seconds so the tab stays connected.")
-            print(">>> You should see the Colab toast change from 'Disconnected' to 'Connected'.")
+            print(
+                ">>> Keeping server alive for 60 more seconds so the tab stays connected."
+            )
+            print(
+                ">>> You should see the Colab toast change from 'Disconnected' to 'Connected'."
+            )
             print()
             # Hold the connection so the user can verify in the browser that the
             # connect persists. Without this, exiting the `async with` block
@@ -56,7 +60,9 @@ async def main():
         except asyncio.TimeoutError:
             print()
             print(f">>> TIMEOUT after {WAIT_SECONDS}s — no browser connected.")
-            print(">>> If you pasted the URL and saw 'Disconnected', the browser engine ")
+            print(
+                ">>> If you pasted the URL and saw 'Disconnected', the browser engine "
+            )
             print(">>> is rejecting the WebSocket connection (not the server).")
             print()
             sys.exit(1)

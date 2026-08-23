@@ -46,10 +46,12 @@ async def _forward_or_stub(tool_name: str, arguments: dict) -> str:
     """Forward a tool call to the browser if connected, otherwise return stub message."""
     if _proxy_client is not None and _proxy_client.is_connected():
         try:
-            result = await _proxy_client.proxy_mcp_client.call_tool(tool_name, arguments)
+            result = await _proxy_client.proxy_mcp_client.call_tool(
+                tool_name, arguments
+            )
             # Extract text from result
-            if hasattr(result, 'content'):
-                return "\n".join(c.text for c in result.content if hasattr(c, 'text'))
+            if hasattr(result, "content"):
+                return "\n".join(c.text for c in result.content if hasattr(c, "text"))
             return str(result)
         except Exception as e:
             return f"Error calling {tool_name}: {e}. Try calling open_colab_browser_connection to reconnect."
@@ -154,10 +156,7 @@ async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> s
     # Timed out — surface diagnostic info about other running servers so the
     # user can recognize the "old browser tab pointed at a dead port" case.
     try:
-        others = [
-            e for e in process_registry.list_running()
-            if e.pid != os.getpid()
-        ]
+        others = [e for e in process_registry.list_running() if e.pid != os.getpid()]
     except Exception:
         others = []
     my_port = _proxy_client.wss.port
@@ -188,15 +187,21 @@ async def open_colab_browser_connection(notebook_url_or_drive_id: str = "") -> s
 
 
 @mcp.tool()
-async def add_code_cell(code: str = "", cellIndex: int = 0, language: str = "python") -> str:
+async def add_code_cell(
+    code: str = "", cellIndex: int = 0, language: str = "python"
+) -> str:
     """Add a new code cell to the Colab notebook. Requires an active browser connection via open_colab_browser_connection."""
-    return await _forward_or_stub("add_code_cell", {"code": code, "cellIndex": cellIndex, "language": language})
+    return await _forward_or_stub(
+        "add_code_cell", {"code": code, "cellIndex": cellIndex, "language": language}
+    )
 
 
 @mcp.tool()
 async def add_text_cell(content: str = "", cellIndex: int = -1) -> str:
     """Add a new text/markdown cell to the Colab notebook. Requires an active browser connection via open_colab_browser_connection."""
-    return await _forward_or_stub("add_text_cell", {"content": content, "cellIndex": cellIndex})
+    return await _forward_or_stub(
+        "add_text_cell", {"content": content, "cellIndex": cellIndex}
+    )
 
 
 @mcp.tool()
@@ -226,7 +231,9 @@ async def delete_cell(cellId: str = "") -> str:
 @mcp.tool()
 async def move_cell(cellId: str = "", cellIndex: int = 0) -> str:
     """Move a cell to a new position in the Colab notebook by cellId and target index. Requires an active browser connection via open_colab_browser_connection."""
-    return await _forward_or_stub("move_cell", {"cellId": cellId, "cellIndex": cellIndex})
+    return await _forward_or_stub(
+        "move_cell", {"cellId": cellId, "cellIndex": cellIndex}
+    )
 
 
 @mcp.tool()
@@ -352,9 +359,7 @@ def create_browser_manager(args) -> ColabBrowserManager | None:
     if not args.playwright_browser:
         return None
     executable_path = (
-        Path(args.browser_executable).expanduser()
-        if args.browser_executable
-        else None
+        Path(args.browser_executable).expanduser() if args.browser_executable else None
     )
     return ColabBrowserManager(
         BrowserConfig(
@@ -374,6 +379,7 @@ def _print_running_servers() -> None:
         return
     print(f"Found {len(entries)} running colab-mcp server(s):")
     import datetime as _dt
+
     for e in entries:
         started = _dt.datetime.fromtimestamp(e.started_at).strftime("%Y-%m-%d %H:%M:%S")
         print(f"  pid={e.pid:<6}  port={e.port:<6}  host={e.host}  started={started}")
@@ -420,9 +426,7 @@ async def main_async():
                 port=_session_mcp.wss.port,
                 host=_session_mcp.wss.host,
             )
-            logging.info(
-                f"Registered colab-mcp pid={entry.pid} port={entry.port}"
-            )
+            logging.info(f"Registered colab-mcp pid={entry.pid} port={entry.port}")
         except Exception as exc:
             logging.warning(f"Could not register process: {exc}")
 
@@ -430,6 +434,7 @@ async def main_async():
         try:
             from colab_mcp.auth import get_credentials
             from colab_mcp.client import ColabClient, Prod
+
             logging.info("initializing Colab API client with OAuth")
             session = get_credentials(args.client_oauth_config)
             _colab_client = ColabClient(Prod(), session)

@@ -41,9 +41,7 @@ class BrowserConfig:
             or parsed.username is not None
             or parsed.password is not None
         ):
-            raise ValueError(
-                "CDP endpoint must be an uncredentialed loopback URL"
-            )
+            raise ValueError("CDP endpoint must be an uncredentialed loopback URL")
 
 
 @dataclass(frozen=True)
@@ -120,9 +118,7 @@ class ColabBrowserManager:
                         browser.on("disconnected", mark_disconnected)
                 else:
                     self.config.profile_dir.mkdir(parents=True, exist_ok=True)
-                    launch_options: dict[str, Any] = {
-                        "headless": self.config.headless
-                    }
+                    launch_options: dict[str, Any] = {"headless": self.config.headless}
                     if self.config.executable_path is not None:
                         launch_options["executable_path"] = str(
                             self.config.executable_path
