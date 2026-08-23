@@ -21,7 +21,7 @@ Four concrete problems that the official `googlecolab/colab-mcp` doesn't solve �
 3. **No deterministic browser bootstrap** — system-browser calls can target the wrong profile or stale tab. Playwright now owns a dedicated persistent profile and selects notebooks semantically by URL/Drive ID.
 4. **No programmatic GPU control** — Google [removed](https://github.com/googlecolab/colab-mcp/discussions/41) the `--enable-runtime` feature entirely. You can't assign T4 / L4 / A100 without clicking in the browser.
 
-This fork pre-registers all 19 tools, manages a dedicated Chrome profile, redacts connection fragments from status output, detects stale servers, and retains the optional OAuth runtime client.
+This fork pre-registers all 24 tools, manages a dedicated Chrome profile, redacts connection fragments from status output, detects stale servers, and retains the optional OAuth runtime client.
 
 ## What's Different
 
@@ -60,6 +60,11 @@ This fork pre-registers all 19 tools, manages a dedicated Chrome profile, redact
 | `restart_runtime` | Yes | | Experimental: restart the runtime, discarding all state |
 | `upload_file` | Yes | | Copy a local file into the runtime, verified with SHA-256 |
 | `download_file` | Yes | | Copy a file out of the runtime to this machine, verified with SHA-256 |
+| `create_job` | | | Define a durable, resumable multi-stage job |
+| `run_job` | Yes | | Run a job forward, skipping stages that already completed |
+| `get_job_status` | Yes | | Per-stage state, log tails, and recent events |
+| `list_jobs` | | | List jobs defined on this machine |
+| `reset_job_stage` | Yes | | Clear a stage's marker so it runs again |
 
 > **Note:** `execute_cell` was renamed to `run_code_cell` in 2026-06-16 to match the browser-side handler name. Pass a `cellId` (from `add_code_cell` or `get_cells`) — the old `cellIndex` fallback was removed.
 
@@ -107,6 +112,61 @@ bit of runtime state - variables, pip installs, and files outside Drive.
 
 > These three tools have unit coverage but have **not** yet been verified
 > against a live Colab notebook. Treat their results as advisory until they are.
+
+---
+
+## Durable Jobs
+
+A Colab session is not a reliable host: the tab closes, the laptop sleeps, the
+runtime gets recycled. Work started with `run_code_cell` inherits every one of
+those failure modes, because it only lives as long as the cell call.
+
+Jobs decouple the work from the connection. Each stage is written to a file in
+the runtime and started as a **detached process**, so it keeps running when the
+browser goes away, and every finished stage leaves a marker containing the
+SHA-256 of its code and of the artifacts it declared.
+
+```
+create_job(
+  job_id="qtip-run",
+  stages_json='[
+    {"id": "setup",  "code": "!pip install -q ...",              "artifacts": []},
+    {"id": "quant",  "code": "run_quantization()",               "artifacts": ["/content/out/model.pt"]},
+    {"id": "eval",   "code": "evaluate()",                       "artifacts": ["/content/out/scores.json"]}
+  ]',
+  persist_dir="/content/drive/MyDrive/qtip-run"
+)
+
+run_job(job_id="qtip-run", wait_sec=120)
+> {"status": "running", "stage": "quant", ...}   # returns; the stage keeps going
+```
+
+What this buys you:
+
+- **Resumable.** `run_job` skips every stage whose marker matches its current
+  code, so re-running after a disconnect continues instead of restarting. Change
+  a stage's code and only that stage (and what follows) runs again.
+- **Verified checkpoints.** Declared artifacts are checksummed by the runtime.
+  A stage that exits 0 without producing them counts as failed rather than
+  silently succeeding, and `persist_dir` receives a copy whose checksum is
+  re-verified after the copy.
+- **Survives the browser.** The stage process is detached with
+  `start_new_session=True`. Closing the tab, reconnecting with
+  `reconnect_notebook`, or restarting this server does not stop it - call
+  `get_job_status` afterwards to see what happened while you were gone.
+- **Heartbeat.** The remote runner refreshes a status file every 10 seconds. A
+  stage whose heartbeat went quiet is reported as `stalled`, which is what a
+  recycled runtime looks like from outside.
+- **Local audit trail.** Manifests and an append-only event log live in
+  `~/.colab-mcp/jobs/<job_id>/` (`%LOCALAPPDATA%\colab-mcp\jobs\` on Windows).
+
+A runtime restart still loses everything not written to `persist_dir`; that is
+what makes declaring artifacts and pointing `persist_dir` at mounted Drive worth
+the trouble.
+
+> Like the runtime-control tools, the job runner has unit and integration
+> coverage locally - the tests run the real runner as a real detached process -
+> but has **not** yet been exercised against a live Colab runtime.
 
 ---
 
@@ -160,7 +220,7 @@ Add to your `.mcp.json` (Claude Code, Cursor, etc.):
 ### 4. Use it
 
 1. Restart your editor / reload the MCP client.
-2. All 18 non-OAuth tools should appear immediately.
+2. All 23 non-OAuth tools should appear immediately.
 3. **First use only:** call `open_colab_notebook` with the target Drive ID or trusted Colab URL. This opens the dedicated profile **without an MCP token**.
 4. In that visible Chrome window, sign in to Google and complete 2FA yourself. Never paste credentials, cookies, or 2FA codes into the agent chat.
 5. After the notebook loads while signed in, call `open_colab_browser_connection` with the same Drive ID/URL. With no argument it targets the scratchpad.

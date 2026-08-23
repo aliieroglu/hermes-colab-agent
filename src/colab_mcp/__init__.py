@@ -30,7 +30,7 @@ from fastmcp.utilities import logging as fastmcp_logger
 from colab_mcp.session import ColabSessionProxy, NOT_CONNECTED_MSG
 from colab_mcp.websocket_server import COLAB, SCRATCH_PATH
 from colab_mcp.browser_manager import BrowserConfig, ColabBrowserManager
-from colab_mcp import notebook_ops, process_registry, runtime_ops
+from colab_mcp import jobs, notebook_ops, process_registry, runtime_ops
 
 
 mcp = FastMCP(name="ColabMCP")
@@ -431,6 +431,109 @@ async def download_file(
             overwrite=overwrite,
         )
     except notebook_ops.NotebookOpsError as exc:
+        return str(exc)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def create_job(
+    job_id: str = "",
+    stages_json: str = "",
+    persist_dir: str = "",
+    notebook_url_or_drive_id: str = "",
+    work_dir: str = "/content",
+) -> str:
+    """Define a durable, resumable multi-stage job.
+
+    stages_json is a JSON array of objects: {"id", "code", "artifacts": [paths],
+    "timeout_sec"}. Each stage runs as a detached process inside the runtime, so
+    it survives the browser tab closing, and a stage that finished with the same
+    code is skipped when the job runs again. Declare the files a stage produces
+    as artifacts: they are checksummed, and a stage that does not produce them
+    counts as failed. persist_dir (for example a mounted Drive folder) receives
+    a verified copy of every artifact.
+    """
+    try:
+        manifest = jobs.create_job(
+            job_id,
+            stages_json,
+            persist_dir=persist_dir,
+            notebook=notebook_url_or_drive_id or None,
+            work_dir=work_dir,
+        )
+    except jobs.JobError as exc:
+        return str(exc)
+    return json.dumps(jobs.describe_job(manifest))
+
+
+@mcp.tool()
+async def run_job(
+    job_id: str = "",
+    wait_sec: float = 120.0,
+    poll_interval_sec: float = 10.0,
+) -> str:
+    """Run a job forward, skipping stages that already completed.
+
+    Returns when the job finishes, a stage fails, or wait_sec expires - never
+    open-ended. A "running" result means the stage is still going inside Colab,
+    which continues whether or not this session is alive; call run_job again to
+    keep following it. Requires an active browser connection.
+    """
+    try:
+        manifest = jobs.load_manifest(job_id)
+        result = await jobs.advance_job(
+            _proxy_call,
+            manifest,
+            wait_sec=wait_sec,
+            poll_interval_sec=poll_interval_sec,
+        )
+    except (jobs.JobError, notebook_ops.NotebookOpsError) as exc:
+        return str(exc)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def get_job_status(job_id: str = "", log_tail_chars: int = 1500) -> str:
+    """Report per-stage state, log tails, and recent events for a job.
+
+    Read-only: it starts nothing. Use it after reconnecting to find out what a
+    job did while this server was away. A stage reported as stalled has stopped
+    updating its heartbeat, which usually means the runtime was restarted.
+    Requires an active browser connection.
+    """
+    try:
+        manifest = jobs.load_manifest(job_id)
+        result = await jobs.job_status(
+            _proxy_call, manifest, log_tail_chars=log_tail_chars
+        )
+    except (jobs.JobError, notebook_ops.NotebookOpsError) as exc:
+        return str(exc)
+    return json.dumps(result)
+
+
+@mcp.tool()
+async def list_jobs() -> str:
+    """List the jobs defined on this machine, with their stages and checksums."""
+    summaries = []
+    for job_id in jobs.list_job_ids():
+        try:
+            summaries.append(jobs.describe_job(jobs.load_manifest(job_id)))
+        except jobs.JobError as exc:
+            summaries.append({"job_id": job_id, "error": str(exc)})
+    return json.dumps(summaries)
+
+
+@mcp.tool()
+async def reset_job_stage(job_id: str = "", stage_id: str = "") -> str:
+    """Delete a stage's completion marker, status, and log so it runs again.
+
+    Use it when a stage completed but produced something wrong; run_job would
+    otherwise skip it. Requires an active browser connection.
+    """
+    try:
+        manifest = jobs.load_manifest(job_id)
+        result = await jobs.reset_stage(_proxy_call, manifest, stage_id)
+    except (jobs.JobError, notebook_ops.NotebookOpsError) as exc:
         return str(exc)
     return json.dumps(result)
 

@@ -35,6 +35,12 @@ EXPECTED_TOOLS = {
     # files
     "upload_file",
     "download_file",
+    # durable jobs
+    "create_job",
+    "run_job",
+    "get_job_status",
+    "list_jobs",
+    "reset_job_stage",
 }
 
 
@@ -194,3 +200,47 @@ async def test_reconnect_runs_the_full_connect_flow_even_when_marked_connected(
 
     assert "Connection successful" in result
     assert calls == ["abcDEF_12345"]
+
+
+@pytest.mark.asyncio
+async def test_job_tools_validate_before_touching_the_browser(monkeypatch, tmp_path):
+    monkeypatch.setenv("COLAB_MCP_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(colab_mcp, "_proxy_client", None)
+
+    assert "non-empty JSON array" in await colab_mcp.create_job.fn(
+        job_id="demo", stages_json="[]"
+    )
+    assert "No job named" in await colab_mcp.run_job.fn(job_id="ghost")
+    assert "No job named" in await colab_mcp.get_job_status.fn(job_id="ghost")
+    assert json.loads(await colab_mcp.list_jobs.fn()) == []
+
+
+@pytest.mark.asyncio
+async def test_create_job_then_list_reports_stage_checksums(monkeypatch, tmp_path):
+    monkeypatch.setenv("COLAB_MCP_JOBS_DIR", str(tmp_path))
+
+    created = json.loads(
+        await colab_mcp.create_job.fn(
+            job_id="demo",
+            stages_json=json.dumps(
+                [{"id": "train", "code": "print(1)", "artifacts": ["/content/m.pt"]}]
+            ),
+            persist_dir="/content/drive/MyDrive/jobs",
+        )
+    )
+
+    assert created["stages"][0]["id"] == "train"
+    assert created["persist_dir"] == "/content/drive/MyDrive/jobs"
+    listed = json.loads(await colab_mcp.list_jobs.fn())
+    assert listed == [created]
+
+
+@pytest.mark.asyncio
+async def test_run_job_reports_the_disconnected_state(monkeypatch, tmp_path):
+    monkeypatch.setenv("COLAB_MCP_JOBS_DIR", str(tmp_path))
+    monkeypatch.setattr(colab_mcp, "_proxy_client", None)
+    await colab_mcp.create_job.fn(
+        job_id="demo", stages_json=json.dumps([{"id": "a", "code": "print(1)"}])
+    )
+
+    assert NOT_CONNECTED_MSG in await colab_mcp.run_job.fn(job_id="demo")

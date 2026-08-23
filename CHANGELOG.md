@@ -6,6 +6,48 @@ This fork follows the upstream `1.0.x` baseline and tags fork-specific work
 with the date of the change. Upstream-merged work keeps its own commit
 history.
 
+## 2026-08-23 - Durable multi-stage jobs (Phase 3)
+
+Cell-scoped execution ties the work to the connection: close the tab and a
+four-hour job dies with it. This adds a job layer that does not.
+
+### Added
+- **`create_job` / `run_job` / `get_job_status` / `list_jobs` /
+  `reset_job_stage`** and `src/colab_mcp/jobs.py`.
+- **Detached execution.** Each stage is written to `<remote_root>/stages/<id>.py`
+  and started through a generic uploaded runner with `start_new_session=True`,
+  so it outlives the browser tab, a `reconnect_notebook`, and this server.
+- **Idempotent resume.** A finished stage leaves `done/<id>.json` holding the
+  SHA-256 of its code plus every artifact digest. `run_job` skips stages whose
+  marker matches, and re-runs one whose code changed - so recovering from a
+  disconnect continues rather than restarts.
+- **Verified checkpoints.** Declared artifacts are checksummed in the runtime; a
+  stage that exits 0 without producing them is failed, not silently completed.
+  `persist_dir` gets a copy whose checksum is re-verified after copying.
+- **Heartbeat and audit trail.** The runner refreshes `status/<id>.json` every
+  10s; a stage that goes quiet for 90s is reported as `stalled` (the shape a
+  recycled runtime takes from outside). Manifests and an append-only event log
+  live under `~/.colab-mcp/jobs/<job_id>/`.
+- **Bounded waits.** `run_job(wait_sec=...)` always returns - completed, failed,
+  or "still running in Colab" - so an agent never blocks open-ended on a job.
+
+### Changed
+- `notebook_ops` grew `write_remote_text`, `run_python_json` (base64-framed, so
+  log text and newlines cannot corrupt the payload), and a shared
+  `_write_remote_bytes` used by both `upload_file` and the job layer.
+  `_ScratchCell` is now the public `ScratchCell`.
+
+### Fixed
+- A stage re-running because its code changed could be launched twice: the old
+  `done` marker still read as "completed" until the new process overwrote it.
+  `launch_stage` now clears the previous marker, status, and log first, and
+  `advance_job` refuses to launch the same stage twice in one call.
+
+### Not yet verified
+The job runner has integration coverage locally - the tests execute the real
+runner as a real detached process against a temp directory - but has **not**
+been exercised against a live Colab runtime.
+
 ## 2026-08-23 - Runtime, wait, and file-transfer tools (Phase 2)
 
 Phase 1 made the connection reliable; the tool surface still stopped at cell

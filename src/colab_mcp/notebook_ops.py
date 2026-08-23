@@ -235,14 +235,14 @@ async def wait_for_cell(
         await sleep(min(poll_interval_sec, max(timeout_sec - elapsed, 0.0)))
 
 
-class _ScratchCell:
+class ScratchCell:
     """A code cell used as a scratch buffer and removed afterwards."""
 
     def __init__(self, call_tool: CallTool):
         self._call_tool = call_tool
         self.cell_id: str | None = None
 
-    async def __aenter__(self) -> _ScratchCell:
+    async def __aenter__(self) -> ScratchCell:
         payload = parse_tool_payload(
             await self._call_tool("add_code_cell", {"code": "", "language": "python"})
         )
@@ -281,6 +281,64 @@ def _remote_literal(remote_path: str) -> str:
     return json.dumps(str(remote_path))
 
 
+async def _write_remote_bytes(
+    scratch: ScratchCell,
+    data: bytes,
+    remote_path: str,
+    *,
+    chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+    expected_sha256: str | None = None,
+) -> dict:
+    """Stream bytes into a runtime file and report the digest Colab computed.
+
+    The digest is always recomputed from the file on disk, so a truncated or
+    reordered chunk surfaces here rather than in whatever reads the file later.
+    """
+    digest = expected_sha256 or hashlib.sha256(data).hexdigest()
+    encoded = base64.b64encode(data).decode("ascii")
+    chunks = [
+        encoded[index : index + chunk_bytes]
+        for index in range(0, len(encoded), chunk_bytes)
+    ] or [""]
+
+    target = _remote_literal(remote_path)
+    await scratch.run(
+        "import base64, hashlib, pathlib\n"
+        f"_p = pathlib.Path({target}).expanduser()\n"
+        "_p.parent.mkdir(parents=True, exist_ok=True)\n"
+        "_parts = []\n"
+        "print('ready')\n"
+    )
+    for chunk in chunks:
+        await scratch.run(f"_parts.append({json.dumps(chunk)})\nprint('ok')\n")
+    payload = await scratch.run(
+        "_p.write_bytes(base64.b64decode(''.join(_parts)))\n"
+        "del _parts\n"
+        "print(hashlib.sha256(_p.read_bytes()).hexdigest())\n"
+        "print(_p.stat().st_size)\n"
+    )
+
+    lines = [
+        line.strip() for line in extract_stdout(payload).splitlines() if line.strip()
+    ]
+    if len(lines) < 2:
+        raise NotebookOpsError(
+            f"Write verification produced unexpected output: {lines!r}"
+        )
+    remote_digest, remote_size = lines[-2], lines[-1]
+    if remote_digest != digest:
+        raise NotebookOpsError(
+            "Write verification failed: the SHA-256 in Colab does not match the "
+            f"source bytes ({remote_digest} != {digest})."
+        )
+    if remote_size.isdigit() and int(remote_size) != len(data):
+        raise NotebookOpsError(
+            f"Write verification failed: Colab wrote {remote_size} bytes, "
+            f"expected {len(data)}."
+        )
+    return {"sha256": remote_digest, "chunks": len(chunks), "bytes": len(data)}
+
+
 async def upload_file(
     call_tool: CallTool,
     local_path: str | Path,
@@ -309,51 +367,18 @@ async def upload_file(
 
     data = source.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
-    encoded = base64.b64encode(data).decode("ascii")
-    chunks = [
-        encoded[index : index + chunk_bytes]
-        for index in range(0, len(encoded), chunk_bytes)
-    ] or [""]
 
-    target = _remote_literal(remote_path)
-    async with _ScratchCell(call_tool) as scratch:
-        await scratch.run(
-            "import base64, hashlib, pathlib\n"
-            f"_p = pathlib.Path({target}).expanduser()\n"
-            "_p.parent.mkdir(parents=True, exist_ok=True)\n"
-            "_parts = []\n"
-            "print('ready')\n"
-        )
-        for chunk in chunks:
-            await scratch.run(f"_parts.append({json.dumps(chunk)})\nprint('ok')\n")
-        payload = await scratch.run(
-            "_p.write_bytes(base64.b64decode(''.join(_parts)))\n"
-            "del _parts\n"
-            "print(hashlib.sha256(_p.read_bytes()).hexdigest())\n"
-            "print(_p.stat().st_size)\n"
-        )
-
-    lines = [
-        line.strip() for line in extract_stdout(payload).splitlines() if line.strip()
-    ]
-    if len(lines) < 2:
-        raise NotebookOpsError(
-            f"Upload verification produced unexpected output: {lines!r}"
-        )
-    remote_digest, remote_size = lines[-2], lines[-1]
-    if remote_digest != digest:
-        raise NotebookOpsError(
-            "Upload verification failed: the SHA-256 in Colab does not match the "
-            f"local file ({remote_digest} != {digest})."
+    async with ScratchCell(call_tool) as scratch:
+        written = await _write_remote_bytes(
+            scratch, data, remote_path, chunk_bytes=chunk_bytes, expected_sha256=digest
         )
     return {
         "status": "uploaded",
         "local_path": str(source),
         "remote_path": remote_path,
         "bytes": size,
-        "remote_bytes": int(remote_size) if remote_size.isdigit() else None,
-        "sha256": digest,
-        "chunks": len(chunks),
+        "sha256": written["sha256"],
+        "chunks": written["chunks"],
     }
 
 
@@ -377,7 +402,7 @@ async def download_file(
 
     target = _remote_literal(remote_path)
     collected: list[str] = []
-    async with _ScratchCell(call_tool) as scratch:
+    async with ScratchCell(call_tool) as scratch:
         payload = await scratch.run(
             "import base64, hashlib, pathlib\n"
             f"_p = pathlib.Path({target}).expanduser()\n"
@@ -449,3 +474,45 @@ def _slice_marked_output(stdout: str) -> str:
         )
     body = stdout.split(_DOWNLOAD_BEGIN, 1)[1].split(_DOWNLOAD_END, 1)[0]
     return "".join(body.split())
+
+
+async def write_remote_text(
+    call_tool: CallTool,
+    remote_path: str,
+    text: str,
+    *,
+    chunk_bytes: int = DEFAULT_CHUNK_BYTES,
+) -> str:
+    """Write a UTF-8 file into the runtime and return its verified SHA-256."""
+    data = text.encode("utf-8")
+    async with ScratchCell(call_tool) as scratch:
+        written = await _write_remote_bytes(
+            scratch, data, remote_path, chunk_bytes=chunk_bytes
+        )
+    return written["sha256"]
+
+
+async def run_python_json(
+    call_tool: CallTool, code: str, *, result_var: str = "_result"
+) -> Any:
+    """Run helper code in a scratch cell and read back ``result_var`` as JSON.
+
+    The payload comes back base64-encoded between markers, so notebook noise,
+    newlines inside log text, and stream chunking cannot corrupt it.
+    """
+    wrapped = (
+        f"{code}\n"
+        "import base64 as _b64, json as _json\n"
+        f"print({_DOWNLOAD_BEGIN!r})\n"
+        f"print(_b64.b64encode(_json.dumps({result_var}).encode()).decode())\n"
+        f"print({_DOWNLOAD_END!r})\n"
+    )
+    async with ScratchCell(call_tool) as scratch:
+        payload = await scratch.run(wrapped)
+    encoded = _slice_marked_output(extract_stdout(payload))
+    try:
+        return json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+    except Exception as exc:
+        raise NotebookOpsError(
+            f"Helper code returned a payload this server could not decode: {exc}"
+        ) from None
