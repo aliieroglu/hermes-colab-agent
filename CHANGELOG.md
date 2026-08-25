@@ -6,6 +6,41 @@ This fork follows the upstream `1.0.x` baseline and tags fork-specific work
 with the date of the change. Upstream-merged work keeps its own commit
 history.
 
+## 2026-08-25 - First live run against a real notebook
+
+The Phase 2/3 tools were exercised against a real Colab notebook
+(`qtip_cosmos8b.ipynb`, A100 runtime) for the first time. Five tools failed on
+a single root cause, and two assumptions turned out to be wrong.
+
+### Fixed
+- **`cellIndex` is required by the browser, and must be >= 0.** Every scratch
+  cell was created with `add_code_cell(code, language)` and no `cellIndex`, so
+  Colab rejected it with `cellIndex Required` - taking down `upload_file`,
+  `download_file`, `run_job`, `get_job_status`, and `reset_job_stage` at once.
+  `ScratchCell` now resolves an append index from the current cell count, and
+  the test double enforces the real schema so this cannot regress.
+- **`add_code_cell` / `add_text_cell` now accept -1 as "append".** The browser
+  rejects negative indices, so `add_text_cell`'s documented -1 default could
+  never have worked; both tools now resolve a negative index to the cell count
+  before the call. `add_code_cell` defaults to appending rather than inserting
+  at the top.
+- **`get_runtime_status` reported `disconnected` for a live A100 runtime.** The
+  connect button's shadow root concatenates hidden nodes, so its text read
+  `Connect A100High-RAM arrow_drop_down` while the runtime was perfectly
+  usable. The tool now decides by **executing a probe snippet** - a runtime
+  that runs code is connected - and returns the GPU, RAM, free disk and Python
+  version with it. The UI reading is kept as `indicator` for diagnosis, and a
+  label like the one above now classifies as `unknown` instead of wrong.
+
+### Known limitations, now documented rather than assumed
+- **`get_cells` carries no execution metadata.** The live payload is
+  `{cell_type, id, source}` - no execution state, count, or outputs. So
+  `wait_for_cell` cannot observe a cell started in the browser and correctly
+  reports `unknown`. Durable jobs remain the supported path for long work.
+- **`interrupt_runtime` did not interrupt.** It reported `requested` while the
+  target cell ran to completion; the Ctrl+M I chord did not reach the notebook.
+  Marked as unreliable in the README pending a fix.
+
 ## 2026-08-23 - Durable multi-stage jobs (Phase 3)
 
 Cell-scoped execution ties the work to the connection: close the tab and a

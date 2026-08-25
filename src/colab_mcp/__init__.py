@@ -60,6 +60,19 @@ async def _proxy_call(tool_name: str, arguments: dict) -> str:
     return str(result)
 
 
+async def _append_index_if_negative(cell_index: int) -> int:
+    """Turn a negative "append" index into one the browser accepts.
+
+    Colab's browser-side add_code_cell requires cellIndex and rejects negative
+    values, so -1 has to be resolved to the current cell count before the call.
+    """
+    if cell_index >= 0:
+        return cell_index
+    if _proxy_client is None or not _proxy_client.is_connected():
+        return 0
+    return await notebook_ops.append_index(_proxy_call)
+
+
 async def _notebook_page(purpose: str, notebook_url_or_drive_id: str = ""):
     """Return the managed page for a notebook, for UI-level control."""
     if _browser_manager is None:
@@ -257,19 +270,21 @@ async def reconnect_notebook(notebook_url_or_drive_id: str = "") -> str:
 
 @mcp.tool()
 async def add_code_cell(
-    code: str = "", cellIndex: int = 0, language: str = "python"
+    code: str = "", cellIndex: int = -1, language: str = "python"
 ) -> str:
-    """Add a new code cell to the Colab notebook. Requires an active browser connection via open_colab_browser_connection."""
+    """Add a new code cell to the Colab notebook. cellIndex -1 (the default) appends after the last cell; 0 inserts at the top. Requires an active browser connection via open_colab_browser_connection."""
+    index = await _append_index_if_negative(cellIndex)
     return await _forward_or_stub(
-        "add_code_cell", {"code": code, "cellIndex": cellIndex, "language": language}
+        "add_code_cell", {"code": code, "cellIndex": index, "language": language}
     )
 
 
 @mcp.tool()
 async def add_text_cell(content: str = "", cellIndex: int = -1) -> str:
-    """Add a new text/markdown cell to the Colab notebook. Requires an active browser connection via open_colab_browser_connection."""
+    """Add a new text/markdown cell to the Colab notebook. cellIndex -1 (the default) appends after the last cell. Requires an active browser connection via open_colab_browser_connection."""
+    index = await _append_index_if_negative(cellIndex)
     return await _forward_or_stub(
-        "add_text_cell", {"content": content, "cellIndex": cellIndex}
+        "add_text_cell", {"content": content, "cellIndex": index}
     )
 
 
@@ -334,19 +349,22 @@ async def wait_for_cell(
 
 @mcp.tool()
 async def get_runtime_status(notebook_url_or_drive_id: str = "") -> str:
-    """Report whether the Colab runtime is connected, plus RAM/disk if shown.
+    """Report whether the Colab runtime is usable, and what hardware it has.
 
-    Read from the notebook UI, because Colab exposes no local API for it.
-    Returns JSON with state connected / connecting / disconnected / unknown and
-    the raw probe; unknown means the indicator could not be interpreted, not
-    that the runtime is down. Defaults to the notebook most recently opened by
-    this server.
+    The verdict comes from running a probe snippet in the runtime, not from
+    reading the UI: a runtime that executes code is connected, and the answer
+    carries the GPU, RAM, and free disk that the connect indicator does not
+    reliably expose. The UI reading is still included as `indicator`, for
+    diagnosis only. Requires an active browser connection.
     """
-    try:
-        page = await _notebook_page("read runtime status", notebook_url_or_drive_id)
-        return json.dumps(await runtime_ops.read_runtime_status(page))
-    except Exception as exc:
-        return _control_error("get_runtime_status", exc)
+    result = await runtime_ops.probe_runtime(_proxy_call)
+    if _browser_manager is not None:
+        try:
+            page = await _notebook_page("read runtime status", notebook_url_or_drive_id)
+            result["indicator"] = await runtime_ops.read_runtime_status(page)
+        except Exception as exc:
+            result["indicator"] = {"error": _control_error("get_runtime_status", exc)}
+    return json.dumps(result)
 
 
 @mcp.tool()

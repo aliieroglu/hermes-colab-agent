@@ -13,6 +13,7 @@ could not confirm.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 # Colab keyboard shortcuts. Ctrl+M is the notebook command prefix on every
@@ -51,6 +52,36 @@ _STATUS_PROBE = """() => {
 }"""
 
 
+RUNTIME_PROBE = """
+import os, platform, shutil, subprocess, time
+_gpu = None
+try:
+    _out = subprocess.run(
+        ['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
+        capture_output=True, text=True, timeout=10)
+    if _out.returncode == 0 and _out.stdout.strip():
+        _gpu = _out.stdout.strip().splitlines()[0].strip()
+except Exception:
+    pass
+try:
+    _ram = round(os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES') / 1e9, 1)
+except Exception:
+    _ram = None
+try:
+    _disk = round(shutil.disk_usage('/content').free / 1e9, 1)
+except Exception:
+    _disk = None
+_result = {
+    'python': platform.python_version(),
+    'cpu_count': os.cpu_count(),
+    'ram_total_gb': _ram,
+    'disk_free_gb': _disk,
+    'gpu': _gpu,
+    'now': time.time(),
+}
+"""
+
+
 class RuntimeControlError(RuntimeError):
     """A runtime control action could not be delivered to the notebook tab."""
 
@@ -77,7 +108,7 @@ def classify_runtime_state(probe: dict[str, Any]) -> str:
     ).lower()
     if not haystack.strip():
         return "unknown"
-    if "connecting" in haystack or "initializing" in haystack or "busy" in haystack:
+    if "connecting" in haystack or "initializing" in haystack:
         return "connecting"
     if "reconnect" in haystack or "disconnected" in haystack:
         return "disconnected"
@@ -85,8 +116,11 @@ def classify_runtime_state(probe: dict[str, Any]) -> str:
         return "connected"
     if "connected" in haystack:
         return "connected"
-    if "connect" in haystack:
-        return "disconnected"
+    # A live probe on 2026-08-25 returned "Connect A100High-RAM arrow_drop_down"
+    # from a *connected* runtime: the shadow root concatenates hidden nodes, so
+    # the word "connect" is not evidence of anything. Only the visible usage
+    # gauge is, and when that is absent the honest answer is unknown - the
+    # semantic probe below is what actually decides.
     return "unknown"
 
 
@@ -174,4 +208,32 @@ async def restart_runtime(page) -> dict:
             + " All runtime state (variables, installed packages, /content files) "
             "is lost on restart."
         ),
+    }
+
+
+async def probe_runtime(call_tool) -> dict:
+    """Ask the runtime itself whether it is alive, and what hardware it has.
+
+    The connect indicator turned out to be unreadable in practice (see
+    :func:`classify_runtime_state`), while executing a snippet is decisive: a
+    runtime that answers is connected, and the answer carries the accelerator
+    and memory the DOM never reliably exposed.
+    """
+    from colab_mcp import notebook_ops
+
+    started = time.monotonic()
+    try:
+        details = await notebook_ops.run_python_json(call_tool, RUNTIME_PROBE)
+    except Exception as exc:
+        return {
+            "state": "disconnected",
+            "detail": (
+                "The runtime did not execute a probe snippet, so it is not "
+                f"usable right now: {type(exc).__name__}: {exc}"
+            ),
+        }
+    return {
+        "state": "connected",
+        "elapsed_sec": round(time.monotonic() - started, 2),
+        "runtime": details,
     }

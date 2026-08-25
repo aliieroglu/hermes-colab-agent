@@ -91,15 +91,24 @@ async def test_wait_for_cell_tool_returns_json_status(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_runtime_tools_explain_that_browser_management_is_disabled(monkeypatch):
+async def test_control_tools_explain_that_browser_management_is_disabled(monkeypatch):
     monkeypatch.setattr(colab_mcp, "_browser_manager", None)
 
-    for tool in (
-        colab_mcp.get_runtime_status,
-        colab_mcp.interrupt_runtime,
-        colab_mcp.restart_runtime,
-    ):
+    for tool in (colab_mcp.interrupt_runtime, colab_mcp.restart_runtime):
         assert "disabled" in await tool.fn()
+
+
+@pytest.mark.asyncio
+async def test_runtime_status_does_not_need_the_browser_manager(monkeypatch):
+    # The verdict comes from executing a probe snippet, so a disabled browser
+    # manager only costs the diagnostic indicator, not the answer.
+    monkeypatch.setattr(colab_mcp, "_browser_manager", None)
+    monkeypatch.setattr(colab_mcp, "_proxy_client", None)
+
+    result = json.loads(await colab_mcp.get_runtime_status.fn())
+
+    assert result["state"] == "disconnected"
+    assert "indicator" not in result
 
 
 @pytest.mark.asyncio
@@ -122,7 +131,9 @@ async def test_runtime_tools_point_at_open_colab_notebook_when_no_tab_matches(
 
 
 @pytest.mark.asyncio
-async def test_runtime_status_tool_returns_the_probe(monkeypatch):
+async def test_runtime_status_reports_hardware_and_keeps_the_indicator_separate(
+    monkeypatch,
+):
     class Manager:
         def __init__(self):
             self.requested = None
@@ -135,15 +146,22 @@ async def test_runtime_status_tool_returns_the_probe(monkeypatch):
     monkeypatch.setattr(colab_mcp, "_browser_manager", manager)
     monkeypatch.setattr(colab_mcp, "_current_target", "abcDEF_12345")
 
-    async def fake_status(page):
-        assert page == "page-object"
-        return {"state": "connected", "probe": {"button": True}}
+    async def fake_probe(call_tool):
+        return {"state": "connected", "runtime": {"gpu": "Tesla T4, 15360 MiB"}}
 
-    monkeypatch.setattr(runtime_ops, "read_runtime_status", fake_status)
+    async def fake_indicator(page):
+        assert page == "page-object"
+        # The UI reading disagrees; the executed probe still decides.
+        return {"state": "unknown", "probe": {"label": "Connect A100High-RAM"}}
+
+    monkeypatch.setattr(runtime_ops, "probe_runtime", fake_probe)
+    monkeypatch.setattr(runtime_ops, "read_runtime_status", fake_indicator)
 
     result = json.loads(await colab_mcp.get_runtime_status.fn())
 
     assert result["state"] == "connected"
+    assert result["runtime"]["gpu"].startswith("Tesla T4")
+    assert result["indicator"]["state"] == "unknown"
     assert manager.requested == "abcDEF_12345"
 
 

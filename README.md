@@ -55,7 +55,7 @@ This fork pre-registers all 24 tools, manages a dedicated Chrome profile, redact
 | `move_cell` | Yes | | Move a cell to a new position by `cellId` |
 | `wait_for_cell` | Yes | | Poll a running cell until it finishes, instead of blocking the MCP call |
 | `reconnect_notebook` | Yes | | Re-run the full connect + verification flow after the tab dropped |
-| `get_runtime_status` | Yes | | Read the runtime indicator (connected / connecting / disconnected / unknown) |
+| `get_runtime_status` | Yes | | Run a probe snippet in the runtime: liveness plus GPU / RAM / free disk |
 | `interrupt_runtime` | Yes | | Experimental: interrupt the executing cell, keeping runtime state |
 | `restart_runtime` | Yes | | Experimental: restart the runtime, discarding all state |
 | `upload_file` | Yes | | Copy a local file into the runtime, verified with SHA-256 |
@@ -85,9 +85,17 @@ wait_for_cell(cellId="abc123", timeout_sec=900)
 
 `wait_for_cell` polls `get_cells` instead of holding the call open. A
 `timeout` result means *the wait* expired - the cell keeps running in Colab, so
-poll again or call `interrupt_runtime`. Colab does not document a stable
-execution-state field, so when none of the known fields is present the status is
-reported as `unknown` together with the raw cell, rather than being guessed.
+poll again or call `interrupt_runtime`.
+
+> **Known limitation, confirmed by live testing (2026-08-25).** Colab's
+> `get_cells` returns only `{cell_type, id, source}` - no execution state, no
+> execution count, no outputs. `wait_for_cell` therefore cannot observe a cell
+> that was started **in the browser**, and honestly reports `status: "unknown"`
+> with the raw cell attached instead of guessing. It remains useful for cells
+> this server started, where `run_code_cell` returns the outputs directly. For
+> work that must outlive the connection, use **Durable Jobs** below - they track
+> progress through status files in the runtime and do not depend on notebook
+> metadata at all.
 
 ### Moving files in and out of the runtime
 
@@ -101,17 +109,32 @@ and both directions verify a SHA-256 computed on both sides, so a truncated
 chunk fails loudly instead of writing a corrupted file. The default ceiling is
 25 MB per transfer (`max_bytes`); stage larger artifacts through Drive.
 
-### Runtime control (experimental)
+### Runtime status and control
 
-`get_runtime_status`, `interrupt_runtime`, and `restart_runtime` read the Colab
-UI and send Colab's own keyboard shortcuts to the managed tab, because Colab
-exposes no local API for them. That makes them the most fragile part of this
-server: they degrade to an `unknown` state and return the raw probe rather than
-asserting something they could not confirm. `restart_runtime` discards every
-bit of runtime state - variables, pip installs, and files outside Drive.
+`get_runtime_status` answers by **running a probe snippet in the runtime**, not
+by reading the UI: a runtime that executes code is connected, and the reply
+carries the GPU, RAM, and free disk that the connect indicator never exposed
+reliably. The UI reading is still returned as `indicator`, for diagnosis only.
 
-> These three tools have unit coverage but have **not** yet been verified
-> against a live Colab notebook. Treat their results as advisory until they are.
+```
+get_runtime_status()
+> {"state": "connected", "elapsed_sec": 1.8,
+>  "runtime": {"gpu": "Tesla T4, 15360 MiB", "ram_total_gb": 12.7,
+>              "disk_free_gb": 78.2, "python": "3.12.11"}, "indicator": {...}}
+```
+
+Live testing showed why the UI cannot be trusted here: a *connected* A100
+runtime rendered the label `Connect A100High-RAM arrow_drop_down`, because the
+connect button's shadow root also carries hidden nodes. The classifier now
+reports `unknown` for such labels rather than the wrong answer.
+
+`interrupt_runtime` and `restart_runtime` still drive Colab's own keyboard
+shortcuts, and remain **experimental**:
+
+> Live testing on 2026-08-25 found `interrupt_runtime` reporting `requested`
+> while the target cell ran to completion - the shortcut did not take effect.
+> Do not rely on it yet. `restart_runtime` discards every bit of runtime state:
+> variables, pip installs, and files outside Drive.
 
 ---
 

@@ -285,3 +285,30 @@ async def test_download_reports_missing_remote_file_as_a_colab_error(tmp_path):
 def test_slice_marked_output_requires_both_markers():
     with pytest.raises(notebook_ops.NotebookOpsError, match="truncated"):
         notebook_ops._slice_marked_output("partial output")
+
+
+@pytest.mark.asyncio
+async def test_scratch_cells_append_with_an_index_the_browser_accepts():
+    """Regression: live testing on 2026-08-25 failed every scratch-cell caller.
+
+    The browser rejected `add_code_cell` with "cellIndex Required", which took
+    down upload_file, download_file, run_job, get_job_status and
+    reset_job_stage at once.
+    """
+    colab = FakeColab()
+    await colab.call_tool("add_code_cell", {"code": "first", "cellIndex": 0})
+    await colab.call_tool("add_code_cell", {"code": "second", "cellIndex": 1})
+
+    async with notebook_ops.ScratchCell(colab.call_tool):
+        pass
+
+    add_calls = [args for name, args in colab.calls if name == "add_code_cell"]
+    assert add_calls[-1]["cellIndex"] == 2, "scratch cell must append, not insert"
+
+
+@pytest.mark.asyncio
+async def test_append_index_falls_back_to_zero_when_cells_cannot_be_counted():
+    async def broken(name, arguments):
+        raise RuntimeError("not connected")
+
+    assert await notebook_ops.append_index(broken) == 0

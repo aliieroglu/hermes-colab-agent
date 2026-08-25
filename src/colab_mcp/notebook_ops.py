@@ -235,6 +235,20 @@ async def wait_for_cell(
         await sleep(min(poll_interval_sec, max(timeout_sec - elapsed, 0.0)))
 
 
+async def append_index(call_tool: CallTool) -> int:
+    """Return an index that appends after the last cell.
+
+    The browser-side ``add_code_cell`` requires ``cellIndex`` and rejects
+    negative values, so "append" has to be expressed as the current cell count.
+    A notebook we cannot count is better served by 0 than by a failed call.
+    """
+    try:
+        payload = parse_tool_payload(await call_tool("get_cells", {}))
+    except Exception:
+        return 0
+    return len(extract_cells(payload))
+
+
 class ScratchCell:
     """A code cell used as a scratch buffer and removed afterwards."""
 
@@ -243,8 +257,12 @@ class ScratchCell:
         self.cell_id: str | None = None
 
     async def __aenter__(self) -> ScratchCell:
+        index = await append_index(self._call_tool)
         payload = parse_tool_payload(
-            await self._call_tool("add_code_cell", {"code": "", "language": "python"})
+            await self._call_tool(
+                "add_code_cell",
+                {"code": "", "cellIndex": index, "language": "python"},
+            )
         )
         cell_id = None
         if isinstance(payload, dict):

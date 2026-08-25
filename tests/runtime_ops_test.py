@@ -61,7 +61,14 @@ class FakePage:
         ({"button": True, "label": "RAM Disk", "attributes": {}}, "connected"),
         ({"button": True, "label": "Connecting...", "attributes": {}}, "connecting"),
         ({"button": True, "label": "Reconnect", "attributes": {}}, "disconnected"),
-        ({"button": True, "label": "Connect", "attributes": {}}, "disconnected"),
+        # Live evidence (2026-08-25): a *connected* A100 runtime rendered this
+        # label, because the shadow root also carries hidden nodes. A bare
+        # "Connect" therefore proves nothing and must not read as disconnected.
+        (
+            {"button": True, "label": "Connect A100High-RAM arrow_drop_down"},
+            "unknown",
+        ),
+        ({"button": True, "label": "Connect", "attributes": {}}, "unknown"),
         ({"button": True, "ariaLabel": "Connected to Python 3"}, "connected"),
         ({"button": False}, "unknown"),
         ({"button": True, "label": "Baglan", "attributes": {}}, "unknown"),
@@ -126,7 +133,7 @@ async def test_interrupt_sends_the_colab_chord_to_the_focused_tab():
 @pytest.mark.asyncio
 async def test_restart_confirms_the_dialog_and_reports_runtime_state():
     page = FakePage(
-        {"button": True, "label": "Connect", "attributes": {}}, confirm_visible=True
+        {"button": True, "label": "Reconnect", "attributes": {}}, confirm_visible=True
     )
 
     result = await runtime_ops.restart_runtime(page)
@@ -155,3 +162,31 @@ async def test_control_actions_fail_when_the_shortcut_cannot_be_delivered():
 
     with pytest.raises(runtime_ops.RuntimeControlError, match="shortcut"):
         await runtime_ops.interrupt_runtime(DeadPage())
+
+
+@pytest.mark.asyncio
+async def test_probe_runtime_reports_hardware_from_the_runtime_itself(tmp_path):
+    """The verdict must come from executed code, not from the connect button."""
+    from fake_colab import FakeColab
+
+    colab = FakeColab()
+
+    result = await runtime_ops.probe_runtime(colab.call_tool)
+
+    assert result["state"] == "connected"
+    assert isinstance(result["runtime"]["python"], str)
+    assert "cpu_count" in result["runtime"]
+    assert "gpu" in result["runtime"]
+    # The scratch cell it used is cleaned up.
+    assert colab.cells == {}
+
+
+@pytest.mark.asyncio
+async def test_probe_runtime_calls_a_dead_runtime_disconnected():
+    async def dead(name, arguments):
+        raise RuntimeError("Not connected to a Colab browser session")
+
+    result = await runtime_ops.probe_runtime(dead)
+
+    assert result["state"] == "disconnected"
+    assert "did not execute a probe snippet" in result["detail"]
