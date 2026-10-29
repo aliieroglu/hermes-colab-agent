@@ -60,7 +60,9 @@ def mock_proxy_client(mock_wss):
 
 
 @pytest.mark.asyncio
-async def test_connection_timeout_keeps_proxy_initialization_alive(mock_wss, monkeypatch):
+async def test_connection_timeout_keeps_proxy_initialization_alive(
+    mock_wss, monkeypatch
+):
     """A first unanswered Colab prompt must not poison later attempts."""
     monkeypatch.setattr(session, "UI_CONNECTION_TIMEOUT", 0.01)
     client = session.ColabProxyClient(mock_wss)
