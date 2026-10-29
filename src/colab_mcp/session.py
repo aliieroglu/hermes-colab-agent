@@ -80,10 +80,11 @@ class ColabProxyClient:
         return self.wss.connection_live.is_set() and self.proxy_mcp_client is not None
 
     async def await_proxy_connection(self):
+        assert self._start_task is not None, "Proxy client must be started first"
         with contextlib.suppress(asyncio.TimeoutError):
             # wait for the connection to be live and for the proxy client to fully initialize
             connection_tasks = asyncio.gather(
-                self.wss.connection_live.wait(), self._start_task
+                self.wss.connection_live.wait(), asyncio.shield(self._start_task)
             )
             await asyncio.wait_for(
                 connection_tasks,

@@ -59,6 +59,32 @@ def mock_proxy_client(mock_wss):
     return client
 
 
+@pytest.mark.asyncio
+async def test_connection_timeout_keeps_proxy_initialization_alive(mock_wss, monkeypatch):
+    """A first unanswered Colab prompt must not poison later attempts."""
+    monkeypatch.setattr(session, "UI_CONNECTION_TIMEOUT", 0.01)
+    client = session.ColabProxyClient(mock_wss)
+    proxy_ready = asyncio.Event()
+
+    async def wait_for_proxy():
+        await proxy_ready.wait()
+
+    start_task = asyncio.create_task(wait_for_proxy())
+    client._start_task = start_task
+    try:
+        await client.await_proxy_connection()
+        assert not start_task.done(), "timing out must not cancel the shared proxy task"
+
+        mock_wss.connection_live.set()
+        proxy_ready.set()
+        await asyncio.wait_for(client.await_proxy_connection(), timeout=1)
+        assert start_task.done() and not start_task.cancelled()
+    finally:
+        if not start_task.done():
+            start_task.cancel()
+        await asyncio.gather(start_task, return_exceptions=True)
+
+
 class TestDirectTools:
     """Tests for the direct tool registration on the mcp server."""
 
